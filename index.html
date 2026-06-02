@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 6;
+  var APP_VERSION = 7;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -271,10 +271,42 @@
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.01ms!important; transition-duration:.01ms!important; scroll-behavior:auto!important}
   }
+  /* ===== Auth ===== */
+  #appLoader{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:15px; background:var(--bg); z-index:60}
+  .authscreen{position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:24px;
+    background:var(--bg); z-index:60}
+  .authcard{width:100%; max-width:380px; text-align:center}
+  .authcard .authlogo{width:60px; height:60px; border-radius:18px; background:var(--accent); color:#06211e;
+    font-size:32px; display:flex; align-items:center; justify-content:center; margin:0 auto 16px}
+  .authcard h1{margin:0 0 4px; font-size:26px; font-weight:800; letter-spacing:-.4px}
+  .authcard .authsub{color:var(--muted); font-size:14px; margin:0 0 22px}
+  .authcard input{width:100%; background:var(--panel); border:1px solid var(--line); color:var(--text);
+    border-radius:11px; padding:14px; font-size:16px; margin-bottom:10px; font-family:inherit}
+  .authcard .btn{width:100%; margin-bottom:10px}
+  .autherr{color:var(--red); font-size:13px; min-height:18px; margin:2px 0 8px; text-align:left; line-height:1.4}
+  .author{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; margin:6px 0 12px}
+  .author::before,.author::after{content:""; flex:1; height:1px; background:var(--line)}
+  .btn.google{background:#fff; color:#1a1f2b; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; gap:10px}
+  .btn.google span{font-weight:800; color:#4285f4}
 </style>
 </head>
 <body>
-<div class="app">
+<div id="appLoader">Loading…</div>
+<div class="authscreen" id="authScreen">
+  <div class="authcard">
+    <div class="authlogo">◷</div>
+    <h1>My Day</h1>
+    <p class="authsub">Sign in to plan your day and sync across devices.</p>
+    <input type="email" id="authEmail" placeholder="Email" autocomplete="email" />
+    <input type="password" id="authPass" placeholder="Password" autocomplete="current-password" />
+    <div class="autherr" id="authError"></div>
+    <button class="btn save" id="btnLogin">Log in</button>
+    <button class="btn cancel" id="btnRegister">Create account</button>
+    <div class="author">or</div>
+    <button class="btn google" id="btnGoogle"><span>G</span> Continue with Google</button>
+  </div>
+</div>
+<div class="app" style="display:none">
   <!-- NAV -->
   <nav class="nav">
     <div class="brand"><span class="logo">◷</span> My Day</div>
@@ -335,6 +367,11 @@
 
     <!-- ===== SETTINGS ===== -->
     <section class="tab" id="tab-settings">
+      <div class="setrow" id="accountRow">
+        <h3>Account</h3>
+        <p id="whoami">—</p>
+        <button class="btn-wide" id="btnSignOut" style="background:var(--panel); color:var(--text); border:1px solid var(--line)">Sign out</button>
+      </div>
       <div class="setrow">
         <h3>Appearance</h3>
         <p>Choose how the app looks. Auto follows your device's system setting.</p>
@@ -485,7 +522,24 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC1UIZXFCOppicf4WdOwvRm9Bmi0zG-QcQ",
+  authDomain: "my-day-f5ed1.firebaseapp.com",
+  projectId: "my-day-f5ed1",
+  storageBucket: "my-day-f5ed1.firebasestorage.app",
+  messagingSenderId: "932884077329",
+  appId: "1:932884077329:web:8888c6d4a663edbb340ab0",
+  measurementId: "G-ZK3X31S6BD"
+};
+let auth=null, db=null;
+try{ const fbApp=initializeApp(firebaseConfig); auth=getAuth(fbApp); db=getFirestore(fbApp); }
+catch(e){ console.warn("Firebase init failed:", e); }
+
 (function(){
   "use strict";
   const BASE_COLORS=["#2dd4bf","#f59e0b","#fb7185","#8b5cf6","#38bdf8","#84cc16","#f472b6","#fb923c","#94a3b8"];
@@ -493,16 +547,32 @@
   const KEY="myday.v2";
   const SLEEP_COLOR="#64748b";
 
-  let state=load();
-  settings();
+  let state={settings:{theme:"dark"}, days:{}};
+  let currentUser=null;
   let current=new Date();
   let activeTab="plan";
   let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1;
 
-  /* ---------- storage ---------- */
-  function load(){
-    try{ const s=JSON.parse(localStorage.getItem(KEY)); if(s&&s.days) return s; }catch(e){}
+  /* ---------- storage (local cache + Firestore cloud) ---------- */
+  function lkey(){ return KEY+"."+(currentUser?currentUser.uid:"anon"); }
+  function loadLocal(){
+    try{ const s=JSON.parse(localStorage.getItem(lkey())); if(s&&s.days) return s; }catch(e){}
+    // one-time migration of legacy un-keyed data into the preview/first user
+    try{ const legacy=JSON.parse(localStorage.getItem(KEY)); if(legacy&&legacy.days) return legacy; }catch(e){}
     return {settings:{theme:"dark"}, days:{}};
+  }
+  function saveLocal(){ try{ localStorage.setItem(lkey(), JSON.stringify(state)); }catch(e){} }
+  function isCloudUser(){ return !!(db && currentUser && currentUser.uid && currentUser.uid!=="preview-user" && !currentUser.isPreview); }
+  async function loadCloud(uid){
+    try{ const snap=await getDoc(doc(db,"users",uid)); if(snap.exists()){ const d=snap.data(); return {settings:d.settings||{theme:"dark"}, days:d.days||{}}; } }
+    catch(e){ console.warn("Cloud load failed:", e); }
+    return null;
+  }
+  let cloudTimer=null;
+  function saveCloud(){
+    if(!isCloudUser()) return;
+    clearTimeout(cloudTimer);
+    cloudTimer=setTimeout(()=>{ setDoc(doc(db,"users",currentUser.uid), {settings:state.settings, days:state.days, updatedAt:Date.now()}, {merge:true}).catch(e=>console.warn("Cloud save failed:", e)); }, 800);
   }
   function settings(){
     if(!state.settings) state.settings={theme:"dark"};
@@ -511,7 +581,7 @@
     if(!Array.isArray(state.settings.generatedColors)) state.settings.generatedColors=[];
     return state.settings;
   }
-  function persist(){ localStorage.setItem(KEY, JSON.stringify(state)); }
+  function persist(){ saveLocal(); saveCloud(); }
   function dkey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
   function day(){
     const k=dkey(current);
@@ -993,7 +1063,45 @@
 
   window.addEventListener("resize",()=>{ if(activeTab==="plan")renderPie(); });
 
-  applyTheme(); setTab("plan");
+  /* ---------- auth: preview-safe 3-mode ---------- */
+  const isLocalPreview = location.hostname==="localhost" || location.hostname==="127.0.0.1";
+  const previewUser = { uid:"preview-user", email:"preview@example.com", username:"preview", isPreview:true };
+  function getCurrentAppUser(fbUser){ if(fbUser) return fbUser; if(isLocalPreview) return previewUser; return null; }
+
+  async function startApp(user){
+    currentUser=user;
+    let data=null;
+    if(isCloudUser()) data=await loadCloud(user.uid);
+    state = data || loadLocal();
+    settings();
+    saveLocal();
+    document.getElementById("appLoader").style.display="none";
+    document.getElementById("authScreen").style.display="none";
+    document.querySelector(".app").style.display="";
+    const who=document.getElementById("whoami"); if(who) who.textContent = user.isPreview? "Preview mode (local dev)" : (user.email||"Signed in");
+    const so=document.getElementById("btnSignOut"); if(so) so.style.display = user.isPreview? "none":"";
+    applyTheme(); setTab("plan");
+  }
+  function showLogin(){
+    document.getElementById("appLoader").style.display="none";
+    document.querySelector(".app").style.display="none";
+    document.getElementById("fab").style.display="none";
+    document.getElementById("authScreen").style.display="flex";
+  }
+
+  function authErr(e){ document.getElementById("authError").textContent = (e&&e.code? e.code.replace("auth/","").replace(/-/g," ") : (e&&e.message)||"Something went wrong."); }
+  const emailVal=()=>document.getElementById("authEmail").value.trim();
+  const passVal=()=>document.getElementById("authPass").value;
+  document.getElementById("btnLogin").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await signInWithEmailAndPassword(auth, emailVal(), passVal()); }catch(e){ authErr(e); } };
+  document.getElementById("btnRegister").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await createUserWithEmailAndPassword(auth, emailVal(), passVal()); }catch(e){ authErr(e); } };
+  document.getElementById("btnGoogle").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await signInWithPopup(auth, new GoogleAuthProvider()); }catch(e){ authErr(e); } };
+  document.getElementById("btnSignOut").onclick=async()=>{ try{ if(auth) await signOut(auth); }catch(e){} location.reload(); };
+
+  if(auth){
+    onAuthStateChanged(auth, fbUser=>{ const u=getCurrentAppUser(fbUser); if(u) startApp(u); else showLogin(); });
+  } else {
+    const u=getCurrentAppUser(null); if(u) startApp(u); else showLogin();
+  }
 })();
 </script>
 </body>
