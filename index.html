@@ -122,6 +122,24 @@
   .timerbtn{border:none; border-radius:11px; padding:9px 16px; font-size:14px; font-weight:700; cursor:pointer; color:#fff}
   .timerbtn.start{background:var(--green)} .timerbtn.stop{background:var(--red)}
   .spent{font-variant-numeric:tabular-nums; font-weight:750; font-size:15px}
+  .spent.tap{cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px}
+  .chips{display:flex; gap:8px; flex-wrap:wrap; width:100%; flex-basis:100%; margin-top:11px}
+  .chip{background:var(--panel-2); border:1px solid var(--line); color:var(--text); border-radius:9px; padding:7px 11px; font-size:13px; font-weight:650; cursor:pointer}
+  .chip.primary{background:var(--green); color:#fff; border-color:transparent}
+  .chip.redeem{background:var(--accent); color:#fff; border-color:transparent}
+  .statuschip{font-size:10.5px; font-weight:750; padding:2px 8px; border-radius:99px; margin-left:8px; text-transform:uppercase; letter-spacing:.4px}
+  .statuschip.done{background:rgba(52,211,153,.18); color:var(--green)}
+  .statuschip.planned{background:var(--track); color:var(--muted)}
+  .redeem-item{display:flex; justify-content:space-between; align-items:center; width:100%; flex-basis:100%;
+    font-size:12.5px; color:var(--muted); background:var(--bg-2); border:1px solid var(--line); border-radius:9px; padding:7px 11px; margin-top:8px}
+  .redeem-item b{color:var(--text); font-weight:650}
+  .redeem-item .x{cursor:pointer; padding:0 4px; font-size:15px}
+  .tracksum{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:12px 14px; margin-bottom:16px; font-size:14px; display:flex; gap:18px}
+  .tracksum b{font-weight:750} .tracksum .g{color:var(--green)}
+  .hm{display:flex; gap:10px; align-items:center}
+  .hm input{width:80px; text-align:center}
+  .hm span{color:var(--muted); font-size:14px}
+  .subhead{font-size:12px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin:18px 0 8px}
 
   /* timeline */
   .timeline{position:relative; padding:10px 12px 10px 50px; overflow:hidden}
@@ -240,6 +258,7 @@
     <!-- ===== TRACK ===== -->
     <section class="tab" id="tab-track">
       <div class="section-title">Time spent today <button class="miniadd" id="addTaskBtn">＋ Add task</button></div>
+      <div id="trackSum"></div>
       <div id="trackList"></div>
     </section>
 
@@ -314,6 +333,65 @@
   </div>
 </div>
 
+<!-- Edit time sheet (set total + log a past session) -->
+<div class="overlay" id="editOverlay">
+  <div class="sheet">
+    <h2 id="editTitle">Edit time</h2>
+    <label class="fl">Set total time spent</label>
+    <div class="hm">
+      <input type="number" id="eH" min="0" max="24" /><span>h</span>
+      <input type="number" id="eM" min="0" max="59" /><span>m</span>
+    </div>
+    <label class="fl">Or add a past session</label>
+    <div class="row2">
+      <div><label class="fl" style="margin-top:0">Start</label><input type="time" id="eStart" /></div>
+      <div><label class="fl" style="margin-top:0">End</label><input type="time" id="eEnd" /></div>
+    </div>
+    <button class="chip" id="eAddSession" style="margin-top:10px">＋ Add this session to total</button>
+    <div class="sheet-actions">
+      <button class="btn cancel" id="eCancel">Cancel</button>
+      <button class="btn save" id="eSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm done sheet -->
+<div class="overlay" id="doneOverlay">
+  <div class="sheet">
+    <h2 id="doneTitle">Mark as done</h2>
+    <p style="color:var(--muted); font-size:14px; margin:0 0 6px">How much did you actually accomplish? Defaults to the full planned time.</p>
+    <label class="fl">Time accomplished</label>
+    <div class="hm">
+      <input type="number" id="dH" min="0" max="24" /><span>h</span>
+      <input type="number" id="dM" min="0" max="59" /><span>m</span>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn cancel" id="dCancel">Cancel</button>
+      <button class="btn save" id="dSave" style="background:var(--green)">✓ Mark done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Redeem sheet -->
+<div class="overlay" id="redeemOverlay">
+  <div class="sheet">
+    <h2 id="redeemTitle">Redeem time</h2>
+    <p style="color:var(--muted); font-size:14px; margin:0 0 6px">Time you spent on something else during this block — it gets credited to that task too.</p>
+    <label class="fl">What did you actually do?</label>
+    <input type="text" id="rName" placeholder="e.g. Reading, Side project" autocomplete="off" list="rNames" />
+    <datalist id="rNames"></datalist>
+    <label class="fl">How long?</label>
+    <div class="hm">
+      <input type="number" id="rH" min="0" max="24" value="0" /><span>h</span>
+      <input type="number" id="rM" min="0" max="59" value="30" /><span>m</span>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn cancel" id="rCancel">Cancel</button>
+      <button class="btn save" id="rSave">Redeem</button>
+    </div>
+  </div>
+</div>
+
 <!-- Schedule slot sheet -->
 <div class="overlay" id="slotOverlay">
   <div class="sheet">
@@ -355,6 +433,7 @@
     const k=dkey(current);
     if(!state.days[k]) state.days[k]={acts:[], tasks:[]};
     const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[];
+    d.acts.forEach(a=>{ if(!a.redeems)a.redeems=[]; if(!a.status)a.status="planned"; });
     return d;
   }
 
@@ -368,6 +447,12 @@
   const DAY_MIN=1440;
   function allocatedMin(){ return day().acts.reduce((s,a)=>s+(a.budgetMin||0),0); }
   function spentNow(a){ let s=a.spentMin||0; if(a.runStartTs) s+=(Date.now()-a.runStartTs)/60000; return s; }
+  function allEntities(){ return [...day().acts, ...day().tasks]; }
+  function findEntity(id){ return day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); }
+  function redeemedInto(id){ let s=0; day().acts.forEach(a=>(a.redeems||[]).forEach(r=>{ if(r.toId===id) s+=r.min; })); return s; }
+  function totalSpent(o){ return spentNow(o)+redeemedInto(o.id); }
+  function hmToMin(hEl,mEl){ return (parseInt(document.getElementById(hEl).value)||0)*60+(parseInt(document.getElementById(mEl).value)||0); }
+  function setHM(hEl,mEl,mins){ mins=Math.max(0,Math.round(mins)); document.getElementById(hEl).value=Math.floor(mins/60); document.getElementById(mEl).value=mins%60; }
 
   /* ---------- theme ---------- */
   function applyTheme(){
@@ -507,6 +592,13 @@
   function renderTrack(){
     const el=document.getElementById("trackList"); el.innerHTML="";
     const acts=day().acts, tasks=day().tasks;
+    // summary
+    const sum=document.getElementById("trackSum");
+    const tracked=allEntities().reduce((s,o)=>s+spentNow(o),0)+day().acts.reduce((s,a)=>s+(a.redeems||[]).reduce((y,r)=>y+r.min,0),0);
+    const redeemed=day().acts.reduce((s,a)=>s+(a.redeems||[]).reduce((y,r)=>y+r.min,0),0);
+    if(tracked>0){ sum.innerHTML='<span>Tracked <b>'+durStr(tracked)+'</b> today</span>'+(redeemed>0?'<span class="g">↩ <b>'+durStr(redeemed)+'</b> redeemed</span>':''); sum.style.display="flex"; sum.className="tracksum"; }
+    else { sum.style.display="none"; }
+
     if(!acts.length && !tasks.length){ el.innerHTML='<div class="empty">No tasks yet.<br>Your reserved times appear here automatically. Tap “Add task” to track anything else.</div>'; return; }
     if(acts.length){
       const h=document.createElement("div"); h.className="section-title"; h.style.margin="0 2px 10px"; h.textContent="From reserved times"; el.appendChild(h);
@@ -517,18 +609,57 @@
     tasks.forEach(t=>el.appendChild(trackRow(t,false,true)));
   }
   function trackRow(a,hasBudget,deletable){
-    const spent=spentNow(a); const pct=hasBudget&&a.budgetMin? Math.min(100,spent/a.budgetMin*100):0;
+    const spent=spentNow(a), inRedeem=redeemedInto(a.id), total=spent+inRedeem;
+    const pct=hasBudget&&a.budgetMin? Math.min(100,total/a.budgetMin*100):0;
     const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap";
+    let spentTxt = hasBudget ? durStr(total)+' of '+durStr(a.budgetMin)
+                             : durStr(total)+' tracked'+(inRedeem>0?' (incl. '+durStr(inRedeem)+' redeemed)':'');
+    const statusChip = hasBudget ? '<span class="statuschip '+(a.status==="done"?"done":"planned")+'">'+(a.status==="done"?"done":"planned")+'</span>' : '';
     div.innerHTML=
       '<span class="dot" style="background:'+a.color+'"></span>'+
-      '<div class="info"><b>'+esc(a.name)+'</b><span class="spent" data-spent="'+a.id+'">'+durStr(spent)+(hasBudget?' of '+durStr(a.budgetMin):' tracked')+'</span></div>'+
+      '<div class="info"><b>'+esc(a.name)+statusChip+'</b><span class="spent tap" data-spent="'+a.id+'">'+spentTxt+'</span></div>'+
       '<button class="timerbtn '+(a.runStartTs?"stop":"start")+'" data-id="'+a.id+'">'+(a.runStartTs?"Stop":"Start")+'</button>'+
       (deletable?'<button class="del" data-del="'+a.id+'">🗑</button>':'')+
-      (hasBudget?'<div class="bar" style="width:100%;flex-basis:100%"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+(spent>a.budgetMin?"var(--red)":a.color)+'"></i></div>':'');
+      (hasBudget?'<div class="bar" style="width:100%;flex-basis:100%"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+(total>a.budgetMin?"var(--red)":a.color)+'"></i></div>':'');
+    // action chips
+    const chips=document.createElement("div"); chips.className="chips";
+    if(hasBudget){
+      const done=document.createElement("button"); done.className="chip"+(a.status==="done"?"":" primary"); done.textContent=a.status==="done"?"✓ Done — edit":"✓ Mark done"; done.onclick=()=>openDone(a); chips.appendChild(done);
+      const red=document.createElement("button"); red.className="chip redeem"; red.textContent="↩ Redeem"; red.onclick=()=>openRedeem(a); chips.appendChild(red);
+    }
+    const edit=document.createElement("button"); edit.className="chip"; edit.textContent="✎ Edit time"; edit.onclick=()=>openEdit(a); chips.appendChild(edit);
+    div.appendChild(chips);
+    // redeem items
+    (a.redeems||[]).forEach(r=>{ const ri=document.createElement("div"); ri.className="redeem-item";
+      ri.innerHTML='<span>↩ <b>'+esc(r.toName)+'</b> · '+durStr(r.min)+' redeemed</span><span class="x">✕</span>';
+      ri.querySelector(".x").onclick=()=>{ a.redeems=a.redeems.filter(z=>z.id!==r.id); persist(); renderTrack(); };
+      div.appendChild(ri); });
     div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
-    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{ const t=day().tasks.find(x=>x.id===a.id); if(t&&t.runStartTs)return alert("Stop the timer first."); day().tasks=day().tasks.filter(x=>x.id!==a.id); persist(); renderTrack(); };
+    div.querySelector(".spent").onclick=()=>openEdit(a);
+    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{ if(a.runStartTs)return alert("Stop the timer first."); day().tasks=day().tasks.filter(x=>x.id!==a.id); persist(); renderTrack(); };
     return div;
   }
+
+  /* edit time / done / redeem sheets */
+  let editId=null, doneId=null, redeemId=null;
+  function openEdit(o){ editId=o.id; document.getElementById("editTitle").textContent="Edit time · "+o.name; setHM("eH","eM",spentNow(o)); document.getElementById("eStart").value=""; document.getElementById("eEnd").value=""; document.getElementById("editOverlay").classList.add("show"); }
+  function addSession(){ const s=document.getElementById("eStart").value, e=document.getElementById("eEnd").value; if(!s||!e)return alert("Pick a start and end time."); let d=toMin(e)-toMin(s); if(d<0)d+=1440; setHM("eH","eM",hmToMin("eH","eM")+d); document.getElementById("eStart").value=""; document.getElementById("eEnd").value=""; }
+  function saveEdit(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=hmToMin("eH","eM"); persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack(); }
+
+  function openDone(a){ doneId=a.id; document.getElementById("doneTitle").textContent="Mark done · "+a.name; setHM("dH","dM", a.status==="done"? spentNow(a) : a.budgetMin); document.getElementById("doneOverlay").classList.add("show"); }
+  function saveDone(){ const a=day().acts.find(x=>x.id===doneId); if(!a)return; if(a.runStartTs)a.runStartTs=null; a.spentMin=hmToMin("dH","dM"); a.status="done"; persist(); document.getElementById("doneOverlay").classList.remove("show"); renderTrack(); }
+
+  function openRedeem(a){ redeemId=a.id; document.getElementById("redeemTitle").textContent="Redeem from "+a.name;
+    document.getElementById("rName").value=""; setHM("rH","rM",30);
+    const dl=document.getElementById("rNames"); dl.innerHTML=""; day().tasks.forEach(t=>{ const o=document.createElement("option"); o.value=t.name; dl.appendChild(o); });
+    document.getElementById("redeemOverlay").classList.add("show"); }
+  function saveRedeem(){ const a=day().acts.find(x=>x.id===redeemId); if(!a)return;
+    const name=document.getElementById("rName").value.trim(); const min=hmToMin("rH","rM");
+    if(!name)return alert("What did you actually do?"); if(min<=0)return alert("Enter how long.");
+    let t=day().tasks.find(x=>x.name.toLowerCase()===name.toLowerCase());
+    if(!t){ t={id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:COLORS[(day().tasks.length+3)%COLORS.length],spentMin:0,runStartTs:null}; day().tasks.push(t); }
+    a.redeems.push({id:"r"+Date.now()+Math.random().toString(36).slice(2,5),toId:t.id,toName:t.name,min});
+    persist(); document.getElementById("redeemOverlay").classList.remove("show"); renderTrack(); }
   function toggleTimer(id){
     const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
     if(a.runStartTs){ a.spentMin=(a.spentMin||0)+(Date.now()-a.runStartTs)/60000; a.runStartTs=null; }
@@ -540,10 +671,10 @@
     if(activeTab!=="track")return;
     const actIds=new Set(day().acts.map(a=>a.id));
     [...day().acts,...day().tasks].forEach(a=>{ if(a.runStartTs){
-      const sp=spentNow(a); const hasBudget=actIds.has(a.id);
+      const inR=redeemedInto(a.id), total=spentNow(a)+inR, hasBudget=actIds.has(a.id);
       const se=document.querySelector('[data-spent="'+a.id+'"]'); const bar=document.querySelector('[data-bar="'+a.id+'"]');
-      if(se)se.textContent=durStr(sp)+(hasBudget?" of "+durStr(a.budgetMin):" tracked");
-      if(bar){ bar.style.width=(a.budgetMin?Math.min(100,sp/a.budgetMin*100):0)+"%"; bar.style.background=sp>a.budgetMin?"var(--red)":a.color; }
+      if(se)se.textContent=hasBudget? durStr(total)+" of "+durStr(a.budgetMin) : durStr(total)+" tracked"+(inR>0?" (incl. "+durStr(inR)+" redeemed)":"");
+      if(bar){ bar.style.width=(a.budgetMin?Math.min(100,total/a.budgetMin*100):0)+"%"; bar.style.background=total>a.budgetMin?"var(--red)":a.color; }
     }});
   },1000);
   setInterval(()=>{ if(activeTab==="schedule"&&isToday())renderSchedule(); },60000);
@@ -566,7 +697,7 @@
     const budgetMin=Math.round(pickedHours*60);
     const acts=day().acts;
     if(editingActId){ const a=acts.find(x=>x.id===editingActId); a.name=name; a.budgetMin=budgetMin; a.color=pickedColor; }
-    else acts.push({id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color:pickedColor,slots:[],spentMin:0,runStartTs:null});
+    else acts.push({id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color:pickedColor,slots:[],spentMin:0,runStartTs:null,status:"planned",redeems:[]});
     persist(); closeAct(); render();
   }
   function closeAct(){ document.getElementById("actOverlay").classList.remove("show"); editingActId=null; }
@@ -625,6 +756,17 @@
   document.getElementById("tCancel").onclick=()=>document.getElementById("taskOverlay").classList.remove("show");
   document.getElementById("tSave").onclick=saveTask;
   document.getElementById("taskOverlay").onclick=e=>{ if(e.target.id==="taskOverlay")document.getElementById("taskOverlay").classList.remove("show"); };
+
+  document.getElementById("eCancel").onclick=()=>document.getElementById("editOverlay").classList.remove("show");
+  document.getElementById("eSave").onclick=saveEdit;
+  document.getElementById("eAddSession").onclick=addSession;
+  document.getElementById("editOverlay").onclick=e=>{ if(e.target.id==="editOverlay")document.getElementById("editOverlay").classList.remove("show"); };
+  document.getElementById("dCancel").onclick=()=>document.getElementById("doneOverlay").classList.remove("show");
+  document.getElementById("dSave").onclick=saveDone;
+  document.getElementById("doneOverlay").onclick=e=>{ if(e.target.id==="doneOverlay")document.getElementById("doneOverlay").classList.remove("show"); };
+  document.getElementById("rCancel").onclick=()=>document.getElementById("redeemOverlay").classList.remove("show");
+  document.getElementById("rSave").onclick=saveRedeem;
+  document.getElementById("redeemOverlay").onclick=e=>{ if(e.target.id==="redeemOverlay")document.getElementById("redeemOverlay").classList.remove("show"); };
 
   document.getElementById("addSlotBtn").onclick=openSlot;
   document.getElementById("sCancel").onclick=()=>document.getElementById("slotOverlay").classList.remove("show");
