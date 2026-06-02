@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 15;
+  var APP_VERSION = 16;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -230,6 +230,12 @@
   .tfield{display:flex; gap:8px; align-items:center}
   .tfield .cselect{flex:1}
   .tfield .tcolon{color:var(--muted); font-weight:800; font-size:18px}
+  .review-banner{display:flex; align-items:center; gap:12px; background:var(--accent); color:#06211e;
+    border-radius:14px; padding:13px 15px; margin-bottom:16px; box-shadow:var(--shadow)}
+  .review-banner .rb-txt{flex:1; font-size:14px; font-weight:600}
+  .review-banner button{border:none; border-radius:9px; padding:8px 13px; font-size:13px; font-weight:750; cursor:pointer}
+  .review-banner .rb-go{background:#06211e; color:#fff}
+  .review-banner .rb-x{background:transparent; color:#06211e; font-size:18px; padding:6px 8px}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -381,6 +387,7 @@
   </nav>
 
   <div class="content">
+    <div id="reviewBanner" class="review-banner" style="display:none"></div>
     <div class="topbar">
       <div>
         <h1 id="tabTitle">Plan</h1>
@@ -507,6 +514,8 @@
     <label class="fl">Color</label>
     <div class="swatches" id="aSwatches"></div>
     <input class="color-input" type="color" id="aColorInput" aria-label="Add custom color" />
+    <label class="fl">Repeat</label>
+    <div id="aRepeatWrap"></div>
     <div class="sheet-actions">
       <button class="btn cancel" id="aCancel">Cancel</button>
       <button class="btn save" id="aSave">Save</button>
@@ -615,6 +624,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   let activeTab="plan";
   let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1, slotSelect=null;
   let slotStartField=null, slotEndField=null, editStartField=null, editEndField=null, dayStartField=null;
+  let pickedRepeat="none", repeatSelect=null;
 
   /* ---------- storage (local cache + Firestore cloud) ---------- */
   function lkey(){ return KEY+"."+(currentUser?currentUser.uid:"anon"); }
@@ -655,8 +665,36 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(!state.days[k]) state.days[k]={acts:[], tasks:[]};
     const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[];
     d.acts.forEach(a=>{ if(!a.status)a.status="planned"; });
+    applyRecurring(d, current);
     return d;
   }
+  /* ---- recurring reserved times ---- */
+  function repeatMatches(type, weekday){ // weekday 0=Sun..6=Sat
+    if(type==="daily")return true;
+    if(type==="weekdays")return weekday>=1&&weekday<=5;
+    if(type==="weekends")return weekday===0||weekday===6;
+    return false;
+  }
+  function repeatLabel(type){ return {none:"Does not repeat",daily:"Every day",weekdays:"Weekdays (Mon–Fri)",weekends:"Weekends"}[type]||"Does not repeat"; }
+  function applyRecurring(d, dateObj){
+    if(!Array.isArray(state.recurring)||!state.recurring.length) return;
+    // only auto-fill the active cycle and future ones (don't rewrite history)
+    const todayCyc=cycleDateOf(Date.now()); todayCyc.setHours(0,0,0,0);
+    const cur=new Date(dateObj); cur.setHours(0,0,0,0);
+    if(cur<todayCyc) return;
+    const wd=dateObj.getDay();
+    state.recurring.forEach(t=>{ if(repeatMatches(t.repeatType,wd) && !d.acts.some(a=>a.tplId===t.id)){
+      d.acts.push({id:"a"+Date.now()+Math.random().toString(36).slice(2,5),tplId:t.id,name:t.name,budgetMin:t.budgetMin,color:t.color,slots:[],spentMin:0,runStartTs:null,status:"planned",repeat:t.repeatType});
+    }});
+  }
+  function upsertTemplate(act){
+    if(!Array.isArray(state.recurring)) state.recurring=[];
+    if(act.tplId){ const t=state.recurring.find(x=>x.id===act.tplId); if(t){ t.name=act.name; t.budgetMin=act.budgetMin; t.color=act.color; t.repeatType=act.repeat; return; } }
+    const id="tpl"+Date.now()+Math.random().toString(36).slice(2,5);
+    state.recurring.push({id, name:act.name, budgetMin:act.budgetMin, color:act.color, repeatType:act.repeat});
+    act.tplId=id;
+  }
+  function removeTemplate(tplId){ if(Array.isArray(state.recurring)) state.recurring=state.recurring.filter(t=>t.id!==tplId); }
   /* ===== CYCLE MODEL =====
      A "cycle" runs 24h from the day-start time. Tracked time is stored globally with
      absolute timestamps and attributed to whichever cycle it actually falls in, so work
@@ -913,7 +951,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
         ? '<span style="color:var(--muted);font-size:13px">'+durStr(scheduled)+' scheduled</span>'
         : '<button class="schedbtn" data-sched="'+a.id+'">Schedule in day</button>';
       div.innerHTML='<span class="dot" style="background:'+a.color+'"></span>'+
-        '<div class="info"><b>'+esc(a.name)+'</b><div style="margin-top:3px">'+status+'</div></div>'+
+        '<div class="info"><b>'+esc(a.name)+(a.repeat&&a.repeat!=="none"?' <span title="'+repeatLabel(a.repeat)+'" style="color:var(--accent);font-size:12px">↻</span>':'')+'</b><div style="margin-top:3px">'+status+'</div></div>'+
         '<span class="budget">'+durStr(a.budgetMin)+'</span>'+
         '<span class="drag" data-drag="'+a.id+'" title="Drag to reorder">⠿</span>'+
         '<div class="bar" style="width:100%;flex-basis:100%"><i style="width:'+pct+'%;background:'+a.color+'"></i></div>';
@@ -1279,6 +1317,10 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(a&&a.color&&!palette().includes(normColor(a.color))) addPaletteColor(a.color,false);
     pickedColor=a?(normColor(a.color)||a.color):colorAt(day().acts.length);
     buildSwatches();
+    pickedRepeat=a&&a.repeat?a.repeat:"none";
+    const rw=document.getElementById("aRepeatWrap"); rw.innerHTML="";
+    repeatSelect=makeSelect(["none","daily","weekdays","weekends"].map(t=>({value:t,label:repeatLabel(t)})), pickedRepeat, v=>{pickedRepeat=v;});
+    rw.appendChild(repeatSelect);
     document.getElementById("aDelete").style.display = a ? "block" : "none";
     document.getElementById("actOverlay").classList.add("show");
   }
@@ -1287,9 +1329,13 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const name=document.getElementById("aName").value.trim()||"Reserved";
     const budgetMin=Math.round(pickedHours*60);
     const color=normColor(pickedColor)||pickedColor;
+    const repeat=repeatSelect?repeatSelect.getValue():"none";
     const acts=day().acts;
-    if(editingActId){ const a=acts.find(x=>x.id===editingActId); a.name=name; a.budgetMin=budgetMin; a.color=color; }
-    else acts.push({id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color,slots:[],spentMin:0,runStartTs:null,status:"planned",redeems:[]});
+    let act;
+    if(editingActId){ act=acts.find(x=>x.id===editingActId); act.name=name; act.budgetMin=budgetMin; act.color=color; act.repeat=repeat; }
+    else { act={id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color,slots:[],spentMin:0,runStartTs:null,status:"planned",repeat}; acts.push(act); }
+    if(repeat!=="none") upsertTemplate(act);
+    else if(act.tplId){ removeTemplate(act.tplId); act.tplId=null; }
     persist(); closeAct(); render();
   }
   function closeAct(){ document.getElementById("actOverlay").classList.remove("show"); editingActId=null; }
@@ -1352,7 +1398,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("aDelete").onclick=()=>{
     if(!editingActId) return;
     const a=day().acts.find(x=>x.id===editingActId);
-    if(confirm('Delete "'+(a?a.name:"this reserved time")+'"? This cannot be undone.')){
+    const msg = a&&a.tplId ? 'Delete "'+a.name+'"? This is a repeating reserved time — deleting stops it on future days too.' : 'Delete "'+(a?a.name:"this reserved time")+'"? This cannot be undone.';
+    if(confirm(msg)){
+      if(a&&a.tplId) removeTemplate(a.tplId);
       day().acts=day().acts.filter(x=>x.id!==editingActId);
       persist(); closeAct(); render();
     }
@@ -1414,7 +1462,22 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(user.isPreview){ if(who)who.textContent="Preview mode (local dev)"; if(so)so.style.display="none"; }
     else if(user.isGuest){ if(who)who.textContent="Guest — saved on this device only"; if(so){ so.style.display=""; so.textContent="Sign in / create account"; so.onclick=()=>showLogin(); } }
     else { if(who)who.textContent=user.email||"Signed in"; if(so){ so.style.display=""; so.textContent="Sign out"; so.onclick=doSignOut; } }
-    applyTheme(); setTab("plan");
+    applyTheme(); setTab("plan"); checkReviewPrompt();
+  }
+  // Day-rollover review prompt: when you open the app in a new cycle, surface the previous one to review
+  function checkReviewPrompt(){
+    const banner=document.getElementById("reviewBanner"); if(!banner) return;
+    const prev=new Date(current); prev.setDate(prev.getDate()-1);
+    const prevKey=dkey(prev);
+    const pd=state.days[prevKey];
+    const w0=cycleStartTs(prev), w1=w0+1440*60000;
+    const hadActivity = (pd && (pd.acts||[]).length) || (state.sessions||[]).some(se=>se.endTs>w0 && se.startTs<w1);
+    if(!hadActivity || settings().lastReviewed===prevKey){ banner.style.display="none"; return; }
+    const label=prev.toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"});
+    banner.innerHTML='<span class="rb-txt">📊 Your previous day ('+label+') is ready to review</span><button class="rb-go">Review</button><button class="rb-x" aria-label="Dismiss">✕</button>';
+    banner.style.display="flex";
+    banner.querySelector(".rb-go").onclick=()=>{ settings().lastReviewed=prevKey; persist(); current=prev; banner.style.display="none"; setTab("report"); };
+    banner.querySelector(".rb-x").onclick=()=>{ settings().lastReviewed=prevKey; persist(); banner.style.display="none"; };
   }
   const guestUser={ uid:"guest", username:"guest", isGuest:true };
   async function doSignOut(){ try{ if(auth) await signOut(auth); }catch(e){} location.reload(); }
