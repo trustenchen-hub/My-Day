@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 8;
+  var APP_VERSION = 9;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -29,7 +29,8 @@
   }catch(e){}
 })();
 </script>
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232dd4bf'/%3E%3Cg fill='none' stroke='%2306211e' stroke-width='7' stroke-linecap='round'%3E%3Ccircle cx='50' cy='52' r='30'/%3E%3Cpath d='M50 52V34M50 52l14 9'/%3E%3C/g%3E%3C/svg%3E" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%232dd4bf'/%3E%3Ccircle cx='50' cy='50' r='29' fill='%2306211e'/%3E%3Cpath d='M50 50 L50 21 A29 29 0 0 1 78 59 Z' fill='%237ff0dd'/%3E%3Cpath d='M50 50 L78 59 A29 29 0 0 1 41 78 Z' fill='%2334d399'/%3E%3Ccircle cx='50' cy='50' r='10.5' fill='%232dd4bf'/%3E%3C/svg%3E" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232dd4bf'/%3E%3Ccircle cx='50' cy='50' r='29' fill='%2306211e'/%3E%3Cpath d='M50 50 L50 21 A29 29 0 0 1 78 59 Z' fill='%237ff0dd'/%3E%3Cpath d='M50 50 L78 59 A29 29 0 0 1 41 78 Z' fill='%2334d399'/%3E%3Ccircle cx='50' cy='50' r='10.5' fill='%232dd4bf'/%3E%3C/svg%3E" />
 <style>
   :root, [data-theme="dark"]{
     color-scheme:dark;
@@ -259,10 +260,13 @@
   .color-input{position:absolute; width:1px; height:1px; opacity:0; pointer-events:none}
   .quick{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px}
   .quick button{background:var(--panel); border:1px solid var(--line); color:var(--muted); border-radius:6px; padding:7px 12px; font-size:13px; font-weight:650; cursor:pointer}
-  .stepper{display:flex; align-items:center; gap:12px; margin-top:8px}
-  .stepper button{width:44px; height:44px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:22px; cursor:pointer}
-  .stepper .val{flex:1; display:flex; align-items:center; justify-content:center; gap:5px; font-size:22px; font-weight:750}
-  .stepper .hour-input{width:112px; text-align:center; font-size:22px; font-weight:800; padding:10px 12px}
+  .stepper{display:flex; align-items:center; justify-content:center; gap:8px; margin-top:8px}
+  .stepper button{width:48px; height:48px; flex:none; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:24px; cursor:pointer}
+  .stepper .val{flex:0 0 auto; display:flex; align-items:center; gap:4px; font-size:22px; font-weight:750}
+  .stepper .hour-input{width:96px; text-align:center; font-size:22px; font-weight:800; padding:11px 8px}
+  .stepper .hour-input::-webkit-outer-spin-button,
+  .stepper .hour-input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0}
+  .stepper .hour-input{-moz-appearance:textfield; appearance:textfield}
   .stepper .unit{color:var(--muted); font-size:17px; font-weight:750}
   .sheet-actions{display:flex; gap:10px; margin-top:24px}
   .btn{flex:1; border:none; border-radius:8px; padding:14px; font-size:16px; font-weight:800; cursor:pointer}
@@ -428,6 +432,7 @@
       <button class="btn cancel" id="aCancel">Cancel</button>
       <button class="btn save" id="aSave">Save</button>
     </div>
+    <button class="btn" id="aDelete" style="display:none; width:100%; margin-top:10px; background:transparent; color:var(--red); border:1px solid var(--line)">Delete this reserved time</button>
   </div>
 </div>
 
@@ -756,16 +761,12 @@ catch(e){ console.warn("Firebase init failed:", e); }
     acts.forEach(a=>{
       const scheduled=(a.slots||[]).reduce((s,x)=>s+(x.end-x.start),0);
       const pct=a.budgetMin?Math.min(100,scheduled/a.budgetMin*100):0;
-      const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap";
+      const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap"; div.style.cursor="pointer";
       div.innerHTML='<span class="dot" style="background:'+a.color+'"></span>'+
         '<div class="info"><b>'+esc(a.name)+'</b><span>'+(scheduled?durStr(scheduled)+" scheduled":"not scheduled yet")+'</span></div>'+
         '<span class="budget">'+durStr(a.budgetMin)+'</span>'+
-        '<button class="del" data-id="'+a.id+'" aria-label="Delete '+esc(a.name)+'" title="Delete">🗑</button>'+
         '<div class="bar" style="width:100%;flex-basis:100%"><i style="width:'+pct+'%;background:'+a.color+'"></i></div>';
-      div.querySelector(".info").onclick=()=>openAct(a);
-      div.querySelector(".dot").onclick=()=>openAct(a);
-      div.querySelector(".budget").onclick=()=>openAct(a);
-      div.querySelector(".del").onclick=()=>{ day().acts=day().acts.filter(x=>x.id!==a.id); persist(); render(); };
+      div.onclick=()=>openAct(a);
       el.appendChild(div);
     });
   }
@@ -966,6 +967,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(a&&a.color&&!palette().includes(normColor(a.color))) addPaletteColor(a.color,false);
     pickedColor=a?(normColor(a.color)||a.color):colorAt(day().acts.length);
     buildSwatches();
+    document.getElementById("aDelete").style.display = a ? "block" : "none";
     document.getElementById("actOverlay").classList.add("show");
   }
   function saveAct(){
@@ -1026,6 +1028,14 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("addActBtn").onclick=()=>openAct(null);
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
+  document.getElementById("aDelete").onclick=()=>{
+    if(!editingActId) return;
+    const a=day().acts.find(x=>x.id===editingActId);
+    if(confirm('Delete "'+(a?a.name:"this reserved time")+'"? This cannot be undone.')){
+      day().acts=day().acts.filter(x=>x.id!==editingActId);
+      persist(); closeAct(); render();
+    }
+  };
   document.getElementById("aMinus").onclick=()=>setHours(pickedHours-0.25);
   document.getElementById("aPlus").onclick=()=>setHours(pickedHours+0.25);
   document.getElementById("aHours").oninput=e=>{ const val=parseFloat(e.target.value); if(Number.isFinite(val)&&val>0) pickedHours=val; };
