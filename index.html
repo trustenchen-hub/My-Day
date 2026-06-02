@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 13;
+  var APP_VERSION = 14;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -537,12 +537,12 @@
       <input type="number" id="eH" min="0" max="24" /><span>h</span>
       <input type="number" id="eM" min="0" max="59" /><span>m</span>
     </div>
-    <label class="fl">Or add a past session</label>
+    <label class="fl">Or log a past session (placed on the timeline)</label>
     <div class="row2">
       <div><label class="fl" style="margin-top:0">Start</label><input type="time" id="eStart" /></div>
       <div><label class="fl" style="margin-top:0">End</label><input type="time" id="eEnd" /></div>
     </div>
-    <button class="chip" id="eAddSession" style="margin-top:10px">＋ Add this session to total</button>
+    <button class="chip" id="eAddSession" style="margin-top:10px">＋ Log this session</button>
     <div class="sheet-actions">
       <button class="btn cancel" id="eCancel">Cancel</button>
       <button class="btn save" id="eSave">Save</button>
@@ -653,14 +653,49 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function day(){
     const k=dkey(current);
     if(!state.days[k]) state.days[k]={acts:[], tasks:[]};
-    const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[]; if(!d.sessions)d.sessions=[];
-    d.acts.forEach(a=>{ if(!a.redeems)a.redeems=[]; if(!a.status)a.status="planned"; });
+    const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[];
+    d.acts.forEach(a=>{ if(!a.status)a.status="planned"; });
     return d;
   }
-  function minOfDay(ts){ const d=new Date(ts); return d.getHours()*60+d.getMinutes()+d.getSeconds()/60; }
-  function logSession(ref, refType, name, color, start, end){
-    if(end<=start) return;
-    day().sessions.push({id:"s"+Date.now()+Math.random().toString(36).slice(2,5), ref, refType, name, color, start:Math.round(start), end:Math.round(end)});
+  /* ===== CYCLE MODEL =====
+     A "cycle" runs 24h from the day-start time. Tracked time is stored globally with
+     absolute timestamps and attributed to whichever cycle it actually falls in, so work
+     past the day-start rolls into the next cycle. `current` = the cycle's start date. */
+  function cycleStartTs(d){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0); return x.getTime()+(settings().dayStartMin||0)*60000; }
+  function cycleWindow(){ const a=cycleStartTs(current); return [a, a+1440*60000]; }
+  function cycleDateOf(ts){ const d=new Date(ts); const tod=d.getHours()*60+d.getMinutes(); const base=new Date(d.getFullYear(),d.getMonth(),d.getDate()); if(tod < (settings().dayStartMin||0)) base.setDate(base.getDate()-1); return base; }
+  function logSession(ref, refType, name, color, startTs, endTs){
+    if(endTs<=startTs) return;
+    if(!state.sessions) state.sessions=[];
+    state.sessions.push({id:"s"+Date.now()+Math.random().toString(36).slice(2,5), ref, refType, name, color, startTs, endTs});
+  }
+  // sessions overlapping the current cycle, as minute-offsets [a,b] within the 24h window
+  function sessionOffsets(filterFn){
+    const [w0,w1]=cycleWindow(); const out=[];
+    (state.sessions||[]).forEach(se=>{ if(filterFn&&!filterFn(se))return;
+      const s=Math.max(se.startTs,w0), e=Math.min(se.endTs,w1); if(e<=s)return;
+      out.push({a:(s-w0)/60000, b:(e-w0)/60000, se});
+    });
+    return out;
+  }
+  // minutes of a ref's tracked sessions that fall inside the current cycle
+  function sessionMinFor(id){ const [w0,w1]=cycleWindow(); let m=0; (state.sessions||[]).forEach(se=>{ if(se.ref===id){ const s=Math.max(se.startTs,w0),e=Math.min(se.endTs,w1); if(e>s)m+=(e-s)/60000; } }); return m; }
+  // one-time migration: per-day sessions (minute-of-day) -> global timestamped; un-bake timer time from spentMin
+  function migrateCycles(){
+    if(state._cycleMigrated) return;
+    if(!state.sessions) state.sessions=[];
+    Object.keys(state.days||{}).forEach(k=>{
+      const d=state.days[k]; if(!d||!Array.isArray(d.sessions)) { return; }
+      const p=k.split("-").map(Number); const base=new Date(p[0],p[1]-1,p[2],0,0,0).getTime();
+      const refMin={};
+      d.sessions.forEach(se=>{ const dur=(((se.end-se.start)%1440)+1440)%1440; const startTs=base+se.start*60000; const endTs=startTs+dur*60000;
+        state.sessions.push({id:se.id||("s"+Math.random().toString(36).slice(2,8)),ref:se.ref,refType:se.refType,name:se.name,color:se.color,startTs,endTs});
+        if(se.ref) refMin[se.ref]=(refMin[se.ref]||0)+dur; });
+      (d.acts||[]).forEach(a=>{ if(refMin[a.id]) a.spentMin=Math.max(0,(a.spentMin||0)-refMin[a.id]); });
+      (d.tasks||[]).forEach(t=>{ if(refMin[t.id]) t.spentMin=Math.max(0,(t.spentMin||0)-refMin[t.id]); });
+      delete d.sessions;
+    });
+    state._cycleMigrated=true;
   }
 
   /* ---------- helpers ---------- */
@@ -687,7 +722,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   }
   document.addEventListener("click",closeAllSelects);
   function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-  function isToday(){ return dkey(new Date())===dkey(current); }
+  function isToday(){ return dkey(cycleDateOf(Date.now()))===dkey(current); }
   function normColor(c){
     c=String(c||"").trim();
     if(/^#[0-9a-f]{6}$/i.test(c)) return c.toLowerCase();
@@ -756,7 +791,11 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function scheduledMin(){ return day().acts.reduce((s,a)=>s+(a.slots||[]).reduce((y,x)=>y+slotDur(x),0),0); }
   function redeemedMin(){ return 0; }
   function trackedMin(){ return allEntities().reduce((s,o)=>s+spentNow(o),0); }
-  function spentNow(a){ let s=a.spentMin||0; if(a.runStartTs) s+=(Date.now()-a.runStartTs)/60000; return s; }
+  function spentNow(a){
+    let s=(a.spentMin||0)+sessionMinFor(a.id);
+    if(a.runStartTs){ const [w0,w1]=cycleWindow(); const st=Math.max(a.runStartTs,w0), en=Math.min(Date.now(),w1); if(en>st) s+=(en-st)/60000; }
+    return s;
+  }
   function allEntities(){ return [...day().acts, ...day().tasks]; }
   function findEntity(id){ return day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); }
   function redeemedInto(id){ return 0; }
@@ -795,8 +834,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
 
   /* ---------- render ---------- */
   function render(){
-    // date label
-    const today=new Date(); today.setHours(0,0,0,0);
+    // date label (relative to the current cycle, not the calendar date)
+    const today=cycleDateOf(Date.now()); today.setHours(0,0,0,0);
     const sel=new Date(current); sel.setHours(0,0,0,0);
     const diff=Math.round((sel-today)/86400000);
     document.getElementById("dateText").textContent =
@@ -1050,11 +1089,21 @@ catch(e){ console.warn("Firebase init failed:", e); }
   /* edit time / done / redeem sheets */
   let editId=null, doneId=null, redeemId=null;
   function openEdit(o){ editId=o.id; document.getElementById("editTitle").textContent="Edit time · "+o.name; setHM("eH","eM",spentNow(o)); document.getElementById("eStart").value=""; document.getElementById("eEnd").value=""; document.getElementById("editOverlay").classList.add("show"); }
-  function addSession(){ const s=document.getElementById("eStart").value, e=document.getElementById("eEnd").value; if(!s||!e)return alert("Pick a start and end time."); let d=toMin(e)-toMin(s); if(d<0)d+=1440; setHM("eH","eM",hmToMin("eH","eM")+d); document.getElementById("eStart").value=""; document.getElementById("eEnd").value=""; }
-  function saveEdit(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=hmToMin("eH","eM"); persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack(); }
+  function addSession(){
+    const o=findEntity(editId); if(!o)return;
+    const s=document.getElementById("eStart").value, e=document.getElementById("eEnd").value;
+    if(!s||!e)return alert("Pick a start and end time.");
+    // place the session within the current cycle by clock time (wraps past midnight if needed)
+    const [w0]=cycleWindow(); const dsMin=settings().dayStartMin||0;
+    let so=((toMin(s)-dsMin)%1440+1440)%1440; let eo=((toMin(e)-dsMin)%1440+1440)%1440; if(eo<=so)eo+=1440;
+    const isAct=day().acts.some(x=>x.id===o.id);
+    logSession(o.id, isAct?"act":"task", o.name, o.color, w0+so*60000, w0+eo*60000);
+    persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack();
+  }
+  function saveEdit(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=Math.max(0, hmToMin("eH","eM")-sessionMinFor(o.id)); persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack(); }
 
   function openDone(a){ doneId=a.id; document.getElementById("doneTitle").textContent="Mark done · "+a.name; setHM("dH","dM", a.status==="done"? spentNow(a) : a.budgetMin); document.getElementById("doneOverlay").classList.add("show"); }
-  function saveDone(){ const a=day().acts.find(x=>x.id===doneId); if(!a)return; if(a.runStartTs)a.runStartTs=null; a.spentMin=hmToMin("dH","dM"); a.status="done"; persist(); document.getElementById("doneOverlay").classList.remove("show"); renderTrack(); }
+  function saveDone(){ const a=day().acts.find(x=>x.id===doneId); if(!a)return; if(a.runStartTs)a.runStartTs=null; a.spentMin=Math.max(0, hmToMin("dH","dM")-sessionMinFor(a.id)); a.status="done"; persist(); document.getElementById("doneOverlay").classList.remove("show"); renderTrack(); }
 
   function toggleTimer(id){
     const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
@@ -1062,10 +1111,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(a.runStartTs){
       const startTs=a.runStartTs, now=Date.now();
       a.runStartTs=null;
-      const elapsedSec=(now-startTs)/1000;
-      if(elapsedSec>=60){ // minimum recordable session is 1 minute
-        a.spentMin=(a.spentMin||0)+elapsedSec/60;
-        logSession(id, isAct?"act":"task", a.name, a.color, minOfDay(startTs), minOfDay(now));
+      if((now-startTs)/1000>=60){ // minimum recordable session is 1 minute; attributed to its real cycle(s)
+        logSession(id, isAct?"act":"task", a.name, a.color, startTs, now);
       }
     } else { a.runStartTs=Date.now(); }
     persist(); renderTrack();
@@ -1093,17 +1140,6 @@ catch(e){ console.warn("Firebase init failed:", e); }
     s.forEach(i=>{ if(out.length&&i[0]<=out[out.length-1][1]) out[out.length-1][1]=Math.max(out[out.length-1][1],i[1]); else out.push(i.slice()); });
     return out;
   }
-  // sessions converted to window-offset intervals (split if crossing the window end)
-  function sessionOffsets(filterFn){
-    const out=[];
-    day().sessions.forEach(se=>{ if(filterFn&&!filterFn(se))return;
-      let a=toOffset(se.start), b=a+(((se.end-se.start)%1440+1440)%1440);
-      if(b<=1440){ out.push({a,b,se}); } else { out.push({a,b:1440,se}); out.push({a:0,b:b-1440,se}); }
-    });
-    return out;
-  }
-  function overlapLen(a1,a2,b1,b2){ return Math.max(0, Math.min(a2,b2)-Math.max(a1,b1)); }
-
   function reportMetrics(){
     const acts=day().acts, tasks=day().tasks;
     // 1) Completion
@@ -1127,7 +1163,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const covered = mergeIntervals(sessionOffsets().map(o=>[o.a,o.b]));
     const accountedMin = covered.reduce((s,i)=>s+(i[1]-i[0]),0);
     const accounted = accountedMin/1440*100;
-    let wasted=0; day().sessions.forEach(se=>{ if(se.refType==="wasted") wasted+=(((se.end-se.start)%1440+1440)%1440); });
+    let wasted=0; sessionOffsets(se=>se.refType==="wasted").forEach(o=>{ wasted+=(o.b-o.a); });
     // gaps
     const gaps=[]; let cur=0; covered.forEach(i=>{ if(i[0]>cur)gaps.push([cur,i[0]]); cur=Math.max(cur,i[1]); }); if(cur<1440)gaps.push([cur,1440]);
     // score
@@ -1147,7 +1183,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function renderReport(){
     const el=document.getElementById("reportBody"); el.innerHTML="";
     const acts=day().acts;
-    const hasData = acts.length || day().sessions.length;
+    const hasData = acts.length || sessionOffsets().length;
     if(!hasData){ el.innerHTML='<div class="empty">Nothing to report yet.<br>Reserve some time on Plan and track what you actually do — your daily evaluation appears here.</div>'; return; }
     const m=reportMetrics();
     const scoreColor = m.score>=80?"var(--green)":m.score>=50?"var(--accent)":"var(--red)";
@@ -1197,12 +1233,11 @@ catch(e){ console.warn("Firebase init failed:", e); }
   }
   function fillGap(offStart,offEnd,val){
     if(!val){ alert("Pick what you did during this gap."); return; }
-    const start=(offStart+winStart())%1440, end=start+(offEnd-offStart);
-    let name="Wasted", color="var(--muted)", ref=null, refType="wasted";
-    if(val.startsWith("act:")){ const a=day().acts.find(x=>x.id===val.slice(4)); if(a){ name=a.name; color=a.color; ref=a.id; refType="act"; a.spentMin=(a.spentMin||0)+(offEnd-offStart); } }
-    else if(val.startsWith("task:")){ const t=day().tasks.find(x=>x.id===val.slice(5)); if(t){ name=t.name; color=t.color; ref=t.id; refType="task"; t.spentMin=(t.spentMin||0)+(offEnd-offStart); } }
-    else { color="#94a3b8"; }
-    logSession(ref, refType, name, color, start, start+(offEnd-offStart));
+    const [w0]=cycleWindow(); const startTs=w0+offStart*60000, endTs=w0+offEnd*60000;
+    let name="Wasted", color="#94a3b8", ref=null, refType="wasted";
+    if(val.startsWith("act:")){ const a=day().acts.find(x=>x.id===val.slice(4)); if(a){ name=a.name; color=a.color; ref=a.id; refType="act"; } }
+    else if(val.startsWith("task:")){ const t=day().tasks.find(x=>x.id===val.slice(5)); if(t){ name=t.name; color=t.color; ref=t.id; refType="task"; } }
+    logSession(ref, refType, name, color, startTs, endTs);
     persist(); renderReport();
   }
 
@@ -1350,6 +1385,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(isCloudUser()) data=await loadCloud(user.uid);
     state = data || loadLocal();
     settings();
+    migrateCycles();
+    current = cycleDateOf(Date.now());
     saveLocal();
     document.getElementById("appLoader").style.display="none";
     document.getElementById("authScreen").style.display="none";
