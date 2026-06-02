@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 7;
+  var APP_VERSION = 8;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -304,6 +304,7 @@
     <button class="btn cancel" id="btnRegister">Create account</button>
     <div class="author">or</div>
     <button class="btn google" id="btnGoogle"><span>G</span> Continue with Google</button>
+    <button class="btn cancel" id="btnGuest" style="margin-top:6px; background:transparent; border:none; color:var(--muted); font-weight:600">Continue as guest (this device only)</button>
   </div>
 </div>
 <div class="app" style="display:none">
@@ -562,7 +563,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     return {settings:{theme:"dark"}, days:{}};
   }
   function saveLocal(){ try{ localStorage.setItem(lkey(), JSON.stringify(state)); }catch(e){} }
-  function isCloudUser(){ return !!(db && currentUser && currentUser.uid && currentUser.uid!=="preview-user" && !currentUser.isPreview); }
+  function isCloudUser(){ return !!(db && currentUser && currentUser.uid && currentUser.uid!=="preview-user" && !currentUser.isPreview && !currentUser.isGuest); }
   async function loadCloud(uid){
     try{ const snap=await getDoc(doc(db,"users",uid)); if(snap.exists()){ const d=snap.data(); return {settings:d.settings||{theme:"dark"}, days:d.days||{}}; } }
     catch(e){ console.warn("Cloud load failed:", e); }
@@ -1078,10 +1079,15 @@ catch(e){ console.warn("Firebase init failed:", e); }
     document.getElementById("appLoader").style.display="none";
     document.getElementById("authScreen").style.display="none";
     document.querySelector(".app").style.display="";
-    const who=document.getElementById("whoami"); if(who) who.textContent = user.isPreview? "Preview mode (local dev)" : (user.email||"Signed in");
-    const so=document.getElementById("btnSignOut"); if(so) so.style.display = user.isPreview? "none":"";
+    const who=document.getElementById("whoami");
+    const so=document.getElementById("btnSignOut");
+    if(user.isPreview){ if(who)who.textContent="Preview mode (local dev)"; if(so)so.style.display="none"; }
+    else if(user.isGuest){ if(who)who.textContent="Guest — saved on this device only"; if(so){ so.style.display=""; so.textContent="Sign in / create account"; so.onclick=()=>showLogin(); } }
+    else { if(who)who.textContent=user.email||"Signed in"; if(so){ so.style.display=""; so.textContent="Sign out"; so.onclick=doSignOut; } }
     applyTheme(); setTab("plan");
   }
+  const guestUser={ uid:"guest", username:"guest", isGuest:true };
+  async function doSignOut(){ try{ if(auth) await signOut(auth); }catch(e){} location.reload(); }
   function showLogin(){
     document.getElementById("appLoader").style.display="none";
     document.querySelector(".app").style.display="none";
@@ -1095,7 +1101,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("btnLogin").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await signInWithEmailAndPassword(auth, emailVal(), passVal()); }catch(e){ authErr(e); } };
   document.getElementById("btnRegister").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await createUserWithEmailAndPassword(auth, emailVal(), passVal()); }catch(e){ authErr(e); } };
   document.getElementById("btnGoogle").onclick=async()=>{ document.getElementById("authError").textContent=""; if(!auth)return authErr({message:"Auth unavailable."}); try{ await signInWithPopup(auth, new GoogleAuthProvider()); }catch(e){ authErr(e); } };
-  document.getElementById("btnSignOut").onclick=async()=>{ try{ if(auth) await signOut(auth); }catch(e){} location.reload(); };
+  document.getElementById("btnSignOut").onclick=doSignOut;
+  document.getElementById("btnGuest").onclick=()=>startApp(guestUser);
 
   if(auth){
     onAuthStateChanged(auth, fbUser=>{ const u=getCurrentAppUser(fbUser); if(u) startApp(u); else showLogin(); });
