@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 9;
+  var APP_VERSION = 10;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -800,9 +800,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
       const span=(s.v/total)*Math.PI*2;
       const a2=ang+span;
       if(s.nm!=="Free"){
-        const gap=Math.min(.035,span*.2);
         ctx.beginPath();
-        ctx.arc(cx,cy,r,ang+gap,a2-gap);
+        ctx.arc(cx,cy,r,ang-0.004,a2+0.004);
         ctx.strokeStyle=s.c;
         ctx.stroke();
       }
