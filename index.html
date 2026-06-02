@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 16;
+  var APP_VERSION = 17;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -236,6 +236,9 @@
   .review-banner button{border:none; border-radius:9px; padding:8px 13px; font-size:13px; font-weight:750; cursor:pointer}
   .review-banner .rb-go{background:#06211e; color:#fff}
   .review-banner .rb-x{background:transparent; color:#06211e; font-size:18px; padding:6px 8px}
+  .act.subtask{margin-left:20px; border-left:3px solid var(--accent)}
+  .act.subtask .dot{width:9px; height:9px}
+  .chip.subadd{background:transparent; border:1px dashed var(--line); color:var(--muted)}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -527,7 +530,7 @@
 <!-- Custom track task sheet -->
 <div class="overlay" id="taskOverlay">
   <div class="sheet">
-    <h2>Add task</h2>
+    <h2 id="taskSheetTitle">Add task</h2>
     <label class="fl">Task name</label>
     <input type="text" id="tName" placeholder="e.g. Email, Reading, Errand" autocomplete="off" />
     <label class="fl">Color</label>
@@ -1112,15 +1115,19 @@ catch(e){ console.warn("Firebase init failed:", e); }
       acts.forEach(a=>el.appendChild(trackRow(a,true,false)));
     }
     const h2=document.createElement("div"); h2.className="section-title"; h2.style.margin="20px 2px 10px"; h2.textContent="Other tasks"; el.appendChild(h2);
-    if(!tasks.length){ const e=document.createElement("div"); e.className="empty"; e.style.padding="10px"; e.textContent="No extra tasks yet."; el.appendChild(e); }
-    tasks.forEach(t=>el.appendChild(trackRow(t,false,true)));
+    const topTasks=tasks.filter(t=>!t.parentId);
+    if(!topTasks.length){ const e=document.createElement("div"); e.className="empty"; e.style.padding="10px"; e.textContent="No extra tasks yet."; el.appendChild(e); }
+    topTasks.forEach(t=>{
+      el.appendChild(trackRow(t,false,true,{canSub:true}));
+      tasks.filter(s=>s.parentId===t.id).forEach(s=>el.appendChild(trackRow(s,false,true,{isSub:true})));
+    });
   }
-  function trackRow(a,hasBudget,deletable){
-    const spent=spentNow(a), inRedeem=redeemedInto(a.id), total=spent+inRedeem;
+  function trackRow(a,hasBudget,deletable,opts){
+    opts=opts||{};
+    const total=spentNow(a);
     const pct=hasBudget&&a.budgetMin? Math.min(100,total/a.budgetMin*100):0;
-    const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap";
-    let spentTxt = hasBudget ? durStr(total)+' of '+durStr(a.budgetMin)
-                             : durStr(total)+' tracked'+(inRedeem>0?' (incl. '+durStr(inRedeem)+' redeemed)':'');
+    const div=document.createElement("div"); div.className="act"+(opts.isSub?" subtask":""); div.style.flexWrap="wrap";
+    let spentTxt = hasBudget ? durStr(total)+' of '+durStr(a.budgetMin) : durStr(total)+' tracked';
     const statusChip = hasBudget ? '<span class="statuschip '+(a.status==="done"?"done":"planned")+'">'+(a.status==="done"?"done":"planned")+'</span>' : '';
     div.innerHTML=
       '<span class="dot" style="background:'+a.color+'"></span>'+
@@ -1134,10 +1141,16 @@ catch(e){ console.warn("Firebase init failed:", e); }
       const done=document.createElement("button"); done.className="chip"+(a.status==="done"?"":" primary"); done.textContent=a.status==="done"?"✓ Done — edit":"✓ Mark done"; done.onclick=()=>openDone(a); chips.appendChild(done);
     }
     const edit=document.createElement("button"); edit.className="chip"; edit.textContent="✎ Edit time"; edit.onclick=()=>openEdit(a); chips.appendChild(edit);
+    if(opts.canSub){ const sub=document.createElement("button"); sub.className="chip subadd"; sub.textContent="＋ Subtask"; sub.onclick=()=>openTask(a.id); chips.appendChild(sub); }
     div.appendChild(chips);
     div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
     div.querySelector(".spent").onclick=()=>openEdit(a);
-    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{ if(a.runStartTs)return alert("Stop the timer first."); day().tasks=day().tasks.filter(x=>x.id!==a.id); persist(); renderTrack(); };
+    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{
+      if(a.runStartTs)return alert("Stop the timer first.");
+      const subs=day().tasks.filter(x=>x.parentId===a.id);
+      if(subs.length && !confirm('Delete "'+a.name+'" and its '+subs.length+' subtask'+(subs.length>1?'s':'')+'?')) return;
+      day().tasks=day().tasks.filter(x=>x.id!==a.id && x.parentId!==a.id); persist(); renderTrack();
+    };
     return div;
   }
 
@@ -1343,8 +1356,16 @@ catch(e){ console.warn("Firebase init failed:", e); }
   /* ---------- custom task sheet ---------- */
   let taskColor=BASE_COLORS[0];
   function buildTaskSwatches(){ renderPaletteSwatches("tSwatches",taskColor,c=>{ taskColor=c; buildTaskSwatches(); },"tColorInput"); }
-  function openTask(){ document.getElementById("tName").value=""; taskColor=colorAt(day().acts.length+day().tasks.length); buildTaskSwatches(); document.getElementById("taskOverlay").classList.add("show"); }
-  function saveTask(){ const name=document.getElementById("tName").value.trim()||"Task"; day().tasks.push({id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:normColor(taskColor)||taskColor,spentMin:0,runStartTs:null}); persist(); document.getElementById("taskOverlay").classList.remove("show"); renderTrack(); }
+  let newTaskParent=null;
+  function openTask(parentId){
+    newTaskParent=parentId||null;
+    const parent=parentId?day().tasks.find(t=>t.id===parentId):null;
+    document.getElementById("taskSheetTitle").textContent=parent?("Add subtask to "+parent.name):"Add task";
+    document.getElementById("tName").value="";
+    taskColor=parent?parent.color:colorAt(day().acts.length+day().tasks.length);
+    buildTaskSwatches(); document.getElementById("taskOverlay").classList.add("show");
+  }
+  function saveTask(){ const name=document.getElementById("tName").value.trim()||"Task"; const t={id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:normColor(taskColor)||taskColor,spentMin:0,runStartTs:null}; if(newTaskParent)t.parentId=newTaskParent; day().tasks.push(t); newTaskParent=null; persist(); document.getElementById("taskOverlay").classList.remove("show"); renderTrack(); }
 
   /* ---------- slot sheet ---------- */
   function openSlot(preId){
