@@ -211,10 +211,6 @@
 
     <!-- ===== PLAN ===== -->
     <section class="tab active" id="tab-plan">
-      <div class="setup">
-        <div class="field"><label>Wake up</label><input type="time" id="wakeInput" /></div>
-        <div class="field"><label>Sleep (hours)</label><input type="number" id="sleepInput" min="0" max="16" step="0.5" /></div>
-      </div>
       <div class="plan-grid">
         <div class="card pie-card">
           <div class="pie-wrap">
@@ -227,7 +223,7 @@
           <div class="legend" id="legend"></div>
         </div>
         <div class="plan-side">
-          <div class="section-title">Reserved hours <button class="miniadd" id="addActBtn">＋ Add</button></div>
+          <div class="section-title">Reserved times <button class="miniadd" id="addActBtn">＋ Add</button></div>
           <div id="actList"></div>
         </div>
       </div>
@@ -243,7 +239,7 @@
 
     <!-- ===== TRACK ===== -->
     <section class="tab" id="tab-track">
-      <div class="section-title">Time spent today</div>
+      <div class="section-title">Time spent today <button class="miniadd" id="addTaskBtn">＋ Add task</button></div>
       <div id="trackList"></div>
     </section>
 
@@ -284,7 +280,7 @@
 <!-- Activity (budget) sheet -->
 <div class="overlay" id="actOverlay">
   <div class="sheet">
-    <h2 id="actSheetTitle">Reserve hours</h2>
+    <h2 id="actSheetTitle">Reserve time</h2>
     <label class="fl">What is it?</label>
     <input type="text" id="aName" placeholder="e.g. Work, Study, Gym, Family" autocomplete="off" />
     <div class="quick" id="aQuick"></div>
@@ -299,6 +295,21 @@
     <div class="sheet-actions">
       <button class="btn cancel" id="aCancel">Cancel</button>
       <button class="btn save" id="aSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Custom track task sheet -->
+<div class="overlay" id="taskOverlay">
+  <div class="sheet">
+    <h2>Add task</h2>
+    <label class="fl">Task name</label>
+    <input type="text" id="tName" placeholder="e.g. Email, Reading, Errand" autocomplete="off" />
+    <label class="fl">Color</label>
+    <div class="swatches" id="tSwatches"></div>
+    <div class="sheet-actions">
+      <button class="btn cancel" id="tCancel">Cancel</button>
+      <button class="btn save" id="tSave">Add</button>
     </div>
   </div>
 </div>
@@ -342,8 +353,9 @@
   function dkey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
   function day(){
     const k=dkey(current);
-    if(!state.days[k]) state.days[k]={wake:"07:00", sleepH:8, acts:[]};
-    return state.days[k];
+    if(!state.days[k]) state.days[k]={acts:[], tasks:[]};
+    const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[];
+    return d;
   }
 
   /* ---------- helpers ---------- */
@@ -353,7 +365,7 @@
   function durStr(mins){ mins=Math.round(mins); if(mins<=0)return"0m"; const h=Math.floor(mins/60),m=mins%60; return (h?h+"h":"")+(m?(h?" ":"")+m+"m":"")||"0m"; }
   function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   function isToday(){ return dkey(new Date())===dkey(current); }
-  function wakingMin(){ return Math.max(0, 1440 - Math.round(day().sleepH*60)); }
+  const DAY_MIN=1440;
   function allocatedMin(){ return day().acts.reduce((s,a)=>s+(a.budgetMin||0),0); }
   function spentNow(a){ let s=a.spentMin||0; if(a.runStartTs) s+=(Date.now()-a.runStartTs)/60000; return s; }
 
@@ -392,10 +404,6 @@
       current.toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"});
     document.getElementById("datePicker").value=dkey(current);
 
-    const d=day();
-    document.getElementById("wakeInput").value=d.wake;
-    document.getElementById("sleepInput").value=d.sleepH;
-
     if(activeTab==="plan"){ renderActs(); renderPie(); }
     else if(activeTab==="schedule"){ renderSchedule(); }
     else if(activeTab==="track"){ renderTrack(); }
@@ -404,7 +412,7 @@
   function renderActs(){
     const el=document.getElementById("actList"); el.innerHTML="";
     const acts=day().acts;
-    if(!acts.length){ el.innerHTML='<div class="empty">No hours reserved yet.<br>Tap “Add” to reserve hours for an activity — you can place them on the calendar later.</div>'; return; }
+    if(!acts.length){ el.innerHTML='<div class="empty">No times reserved yet.<br>Tap “Add” to reserve time for an activity (e.g. Sleep, Work) — you can place them on the calendar later.</div>'; return; }
     acts.forEach(a=>{
       const div=document.createElement("div"); div.className="act";
       div.innerHTML='<span class="dot" style="background:'+a.color+'"></span>'+
@@ -426,13 +434,12 @@
     const ctx=c.getContext("2d"); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,size,size);
     const cx=size/2, cy=size/2, r=size/2-4, hole=r*0.62;
 
-    const sleepMin=Math.round(day().sleepH*60);
     const acts=day().acts;
     const alloc=allocatedMin();
-    const free=Math.max(0, wakingMin()-alloc);
-    const over=alloc>wakingMin();
+    const free=Math.max(0, DAY_MIN-alloc);
+    const over=alloc>DAY_MIN;
 
-    const segs=[{nm:"Sleep",v:sleepMin,c:SLEEP_COLOR}];
+    const segs=[];
     acts.forEach(a=>segs.push({nm:a.name,v:a.budgetMin,c:a.color}));
     if(!over) segs.push({nm:"Free",v:free,c:getCss("--track")});
 
@@ -448,7 +455,7 @@
     // hole
     ctx.beginPath(); ctx.arc(cx,cy,hole,0,Math.PI*2); ctx.fillStyle=cs.getPropertyValue("--hole"); ctx.fill();
 
-    document.getElementById("pieFree").textContent = over? "+"+durStr(alloc-wakingMin()) : durStr(free);
+    document.getElementById("pieFree").textContent = over? "+"+durStr(alloc-DAY_MIN) : durStr(free);
     document.getElementById("pieFree").classList.toggle("over",over);
     document.getElementById("pieLbl").textContent = over? "over-allocated" : "free to allocate";
 
@@ -463,7 +470,7 @@
   function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim()||"#888"; }
 
   /* schedule */
-  function winBounds(){ const s=toMin(day().wake); return [s, s+wakingMin()]; }
+  function winBounds(){ return [0, DAY_MIN]; }
   function renderSchedule(){
     const acts=day().acts;
     const [winS,winE]=winBounds();
@@ -499,22 +506,31 @@
   /* track */
   function renderTrack(){
     const el=document.getElementById("trackList"); el.innerHTML="";
-    const acts=day().acts;
-    if(!acts.length){ el.innerHTML='<div class="empty">Reserve some activities on the Plan tab first, then track the time you actually spend on each here.</div>'; return; }
-    acts.forEach(a=>{
-      const spent=spentNow(a); const pct=a.budgetMin? Math.min(100,spent/a.budgetMin*100):0;
-      const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap";
-      div.innerHTML=
-        '<span class="dot" style="background:'+a.color+'"></span>'+
-        '<div class="info"><b>'+esc(a.name)+'</b><span class="spent" data-spent="'+a.id+'">'+durStr(spent)+' of '+durStr(a.budgetMin)+'</span></div>'+
-        '<button class="timerbtn '+(a.runStartTs?"stop":"start")+'" data-id="'+a.id+'">'+(a.runStartTs?"Stop":"Start")+'</button>'+
-        '<div class="bar" style="width:100%;flex-basis:100%"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+(spent>a.budgetMin?"var(--red)":a.color)+'"></i></div>';
-      div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
-      el.appendChild(div);
-    });
+    const acts=day().acts, tasks=day().tasks;
+    if(!acts.length && !tasks.length){ el.innerHTML='<div class="empty">No tasks yet.<br>Your reserved times appear here automatically. Tap “Add task” to track anything else.</div>'; return; }
+    if(acts.length){
+      const h=document.createElement("div"); h.className="section-title"; h.style.margin="0 2px 10px"; h.textContent="From reserved times"; el.appendChild(h);
+      acts.forEach(a=>el.appendChild(trackRow(a,true,false)));
+    }
+    const h2=document.createElement("div"); h2.className="section-title"; h2.style.margin="20px 2px 10px"; h2.textContent="Other tasks"; el.appendChild(h2);
+    if(!tasks.length){ const e=document.createElement("div"); e.className="empty"; e.style.padding="8px"; e.textContent="No extra tasks — tap “Add task” above."; el.appendChild(e); }
+    tasks.forEach(t=>el.appendChild(trackRow(t,false,true)));
+  }
+  function trackRow(a,hasBudget,deletable){
+    const spent=spentNow(a); const pct=hasBudget&&a.budgetMin? Math.min(100,spent/a.budgetMin*100):0;
+    const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap";
+    div.innerHTML=
+      '<span class="dot" style="background:'+a.color+'"></span>'+
+      '<div class="info"><b>'+esc(a.name)+'</b><span class="spent" data-spent="'+a.id+'">'+durStr(spent)+(hasBudget?' of '+durStr(a.budgetMin):' tracked')+'</span></div>'+
+      '<button class="timerbtn '+(a.runStartTs?"stop":"start")+'" data-id="'+a.id+'">'+(a.runStartTs?"Stop":"Start")+'</button>'+
+      (deletable?'<button class="del" data-del="'+a.id+'">🗑</button>':'')+
+      (hasBudget?'<div class="bar" style="width:100%;flex-basis:100%"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+(spent>a.budgetMin?"var(--red)":a.color)+'"></i></div>':'');
+    div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
+    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{ const t=day().tasks.find(x=>x.id===a.id); if(t&&t.runStartTs)return alert("Stop the timer first."); day().tasks=day().tasks.filter(x=>x.id!==a.id); persist(); renderTrack(); };
+    return div;
   }
   function toggleTimer(id){
-    const a=day().acts.find(x=>x.id===id); if(!a)return;
+    const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
     if(a.runStartTs){ a.spentMin=(a.spentMin||0)+(Date.now()-a.runStartTs)/60000; a.runStartTs=null; }
     else { a.runStartTs=Date.now(); }
     persist(); renderTrack();
@@ -522,9 +538,11 @@
   // live timer ticking
   setInterval(()=>{
     if(activeTab!=="track")return;
-    day().acts.forEach(a=>{ if(a.runStartTs){
-      const sp=spentNow(a); const se=document.querySelector('[data-spent="'+a.id+'"]'); const bar=document.querySelector('[data-bar="'+a.id+'"]');
-      if(se)se.textContent=durStr(sp)+" of "+durStr(a.budgetMin);
+    const actIds=new Set(day().acts.map(a=>a.id));
+    [...day().acts,...day().tasks].forEach(a=>{ if(a.runStartTs){
+      const sp=spentNow(a); const hasBudget=actIds.has(a.id);
+      const se=document.querySelector('[data-spent="'+a.id+'"]'); const bar=document.querySelector('[data-bar="'+a.id+'"]');
+      if(se)se.textContent=durStr(sp)+(hasBudget?" of "+durStr(a.budgetMin):" tracked");
       if(bar){ bar.style.width=(a.budgetMin?Math.min(100,sp/a.budgetMin*100):0)+"%"; bar.style.background=sp>a.budgetMin?"var(--red)":a.color; }
     }});
   },1000);
@@ -536,7 +554,7 @@
   function setHours(h){ pickedHours=Math.max(0.25,Math.round(h*4)/4); document.getElementById("aHours").textContent=Number.isInteger(pickedHours)?pickedHours:pickedHours.toFixed(2).replace(/0$/,""); }
   function openAct(a){
     editingActId=a?a.id:null;
-    document.getElementById("actSheetTitle").textContent=a?"Edit reserved hours":"Reserve hours";
+    document.getElementById("actSheetTitle").textContent=a?"Edit reserved time":"Reserve time";
     document.getElementById("aName").value=a?a.name:"";
     setHours(a?a.budgetMin/60:1);
     pickedColor=a?a.color:COLORS[day().acts.length%COLORS.length];
@@ -552,6 +570,12 @@
     persist(); closeAct(); render();
   }
   function closeAct(){ document.getElementById("actOverlay").classList.remove("show"); editingActId=null; }
+
+  /* ---------- custom task sheet ---------- */
+  let taskColor=COLORS[0];
+  function buildTaskSwatches(){ const sw=document.getElementById("tSwatches"); sw.innerHTML=""; COLORS.forEach(c=>{ const s=document.createElement("div"); s.className="swatch"+(c===taskColor?" sel":""); s.style.background=c; s.onclick=()=>{ taskColor=c; buildTaskSwatches(); }; sw.appendChild(s); }); }
+  function openTask(){ document.getElementById("tName").value=""; taskColor=COLORS[(day().tasks.length+3)%COLORS.length]; buildTaskSwatches(); document.getElementById("taskOverlay").classList.add("show"); }
+  function saveTask(){ const name=document.getElementById("tName").value.trim()||"Task"; day().tasks.push({id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:taskColor,spentMin:0,runStartTs:null}); persist(); document.getElementById("taskOverlay").classList.remove("show"); renderTrack(); }
 
   /* ---------- slot sheet ---------- */
   function openSlot(){
@@ -590,15 +614,17 @@
   document.getElementById("prevDay").onclick=()=>{ current.setDate(current.getDate()-1); render(); };
   document.getElementById("nextDay").onclick=()=>{ current.setDate(current.getDate()+1); render(); };
   document.getElementById("datePicker").onchange=e=>{ if(e.target.value){ const [y,m,d]=e.target.value.split("-").map(Number); current=new Date(y,m-1,d); render(); } };
-  document.getElementById("wakeInput").onchange=e=>{ day().wake=e.target.value||"07:00"; persist(); render(); };
-  document.getElementById("sleepInput").onchange=e=>{ day().sleepH=Math.max(0,Math.min(16,parseFloat(e.target.value)||0)); persist(); render(); };
-
   document.getElementById("addActBtn").onclick=()=>openAct(null);
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
   document.getElementById("aMinus").onclick=()=>setHours(pickedHours-0.25);
   document.getElementById("aPlus").onclick=()=>setHours(pickedHours+0.25);
   document.getElementById("actOverlay").onclick=e=>{ if(e.target.id==="actOverlay")closeAct(); };
+
+  document.getElementById("addTaskBtn").onclick=openTask;
+  document.getElementById("tCancel").onclick=()=>document.getElementById("taskOverlay").classList.remove("show");
+  document.getElementById("tSave").onclick=saveTask;
+  document.getElementById("taskOverlay").onclick=e=>{ if(e.target.id==="taskOverlay")document.getElementById("taskOverlay").classList.remove("show"); };
 
   document.getElementById("addSlotBtn").onclick=openSlot;
   document.getElementById("sCancel").onclick=()=>document.getElementById("slotOverlay").classList.remove("show");
