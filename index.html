@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 14;
+  var APP_VERSION = 15;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -227,6 +227,9 @@
   .cselect-opt:hover{background:var(--panel)}
   .cselect-opt.sel{background:var(--accent); color:#06211e; font-weight:700}
   .cselect-opt .ck{opacity:0} .cselect-opt.sel .ck{opacity:1}
+  .tfield{display:flex; gap:8px; align-items:center}
+  .tfield .cselect{flex:1}
+  .tfield .tcolon{color:var(--muted); font-weight:800; font-size:18px}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -447,8 +450,8 @@
       <div class="setrow">
         <h3>Start of day</h3>
         <p>When a new day begins — usually when you go to sleep. The daily report covers the 24 hours from this time. Enter any exact time (e.g. 10:30 PM).</p>
-        <div class="hm" style="gap:10px; align-items:center">
-          <input type="time" id="dayStartInput" style="max-width:160px" />
+        <div id="dayStartField"></div>
+        <div style="display:flex; gap:10px; align-items:center; margin-top:10px">
           <button class="btn save" id="dayStartSave" style="display:none; padding:11px 18px; flex:none">Save</button>
           <span id="dayStartSaved" style="display:none; color:var(--green); font-size:13px; font-weight:600">Saved ✓</span>
         </div>
@@ -538,10 +541,8 @@
       <input type="number" id="eM" min="0" max="59" /><span>m</span>
     </div>
     <label class="fl">Or log a past session (placed on the timeline)</label>
-    <div class="row2">
-      <div><label class="fl" style="margin-top:0">Start</label><input type="time" id="eStart" /></div>
-      <div><label class="fl" style="margin-top:0">End</label><input type="time" id="eEnd" /></div>
-    </div>
+    <label class="fl" style="margin-top:6px">Start</label><div id="eStartField"></div>
+    <label class="fl">End</label><div id="eEndField"></div>
     <button class="chip" id="eAddSession" style="margin-top:10px">＋ Log this session</button>
     <div class="sheet-actions">
       <button class="btn cancel" id="eCancel">Cancel</button>
@@ -574,10 +575,8 @@
     <h2>Place a block</h2>
     <label class="fl">Which reserved activity?</label>
     <div id="sActWrap"></div>
-    <div class="row2">
-      <div><label class="fl">Start</label><input type="time" id="sStart" /></div>
-      <div><label class="fl">End</label><input type="time" id="sEnd" /></div>
-    </div>
+    <label class="fl">Start</label><div id="sStartField"></div>
+    <label class="fl">End</label><div id="sEndField"></div>
     <div class="sheet-actions">
       <button class="btn cancel" id="sCancel">Cancel</button>
       <button class="btn save" id="sSave">Place</button>
@@ -615,6 +614,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   let current=new Date();
   let activeTab="plan";
   let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1, slotSelect=null;
+  let slotStartField=null, slotEndField=null, editStartField=null, editEndField=null, dayStartField=null;
 
   /* ---------- storage (local cache + Firestore cloud) ---------- */
   function lkey(){ return KEY+"."+(currentUser?currentUser.uid:"anon"); }
@@ -721,6 +721,23 @@ catch(e){ console.warn("Firebase init failed:", e); }
     return wrap;
   }
   document.addEventListener("click",closeAllSelects);
+  // custom time field built from the app's own dropdowns (no native time wheel)
+  function makeTimeField(initMin, onChange){
+    initMin=((Math.round(initMin||0)%1440)+1440)%1440;
+    const wrap=document.createElement("div"); wrap.className="tfield";
+    const hours=[]; for(let i=1;i<=12;i++)hours.push({value:String(i),label:String(i)});
+    const mins=[]; for(let i=0;i<60;i++)mins.push({value:String(i),label:String(i).padStart(2,"0")});
+    const aps=[{value:"AM",label:"AM"},{value:"PM",label:"PM"}];
+    let H=Math.floor(initMin/60), M=initMin%60; const ap=H>=12?"PM":"AM"; const h12=H%12||12;
+    const fire=()=>{ onChange&&onChange(get()); };
+    const hSel=makeSelect(hours,String(h12),fire), mSel=makeSelect(mins,String(M),fire), aSel=makeSelect(aps,ap,fire);
+    function get(){ let hh=parseInt(hSel.getValue())%12; if(aSel.getValue()==="PM")hh+=12; return hh*60+parseInt(mSel.getValue()); }
+    const colon=document.createElement("span"); colon.className="tcolon"; colon.textContent=":";
+    wrap.appendChild(hSel); wrap.appendChild(colon); wrap.appendChild(mSel); wrap.appendChild(aSel);
+    wrap.getValue=get;
+    wrap.setValue=(min)=>{ min=((Math.round(min)%1440)+1440)%1440; const h=Math.floor(min/60),m=min%60; hSel.setValue(String(h%12||12)); mSel.setValue(String(m)); aSel.setValue(h>=12?"PM":"AM"); };
+    return wrap;
+  }
   function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   function isToday(){ return dkey(cycleDateOf(Date.now()))===dkey(current); }
   function normColor(c){
@@ -828,7 +845,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     fab.style.display="none";
     fab.setAttribute("aria-label", t==="schedule"?"Place a block":t==="track"?"Add task":"Reserve time");
     fab.title=fab.getAttribute("aria-label");
-    if(t==="settings"){ const ds=document.getElementById("dayStartInput"); if(ds){ ds.value=fromMin(settings().dayStartMin); document.getElementById("dayStartSave").style.display="none"; document.getElementById("dayStartSaved").style.display="none"; } }
+    if(t==="settings"){ const wrap=document.getElementById("dayStartField"); if(wrap){ wrap.innerHTML=""; dayStartField=makeTimeField(settings().dayStartMin, ()=>{ document.getElementById("dayStartSave").style.display=""; document.getElementById("dayStartSaved").style.display="none"; }); wrap.appendChild(dayStartField); document.getElementById("dayStartSave").style.display="none"; document.getElementById("dayStartSaved").style.display="none"; } }
     render();
   }
 
@@ -1088,14 +1105,16 @@ catch(e){ console.warn("Firebase init failed:", e); }
 
   /* edit time / done / redeem sheets */
   let editId=null, doneId=null, redeemId=null;
-  function openEdit(o){ editId=o.id; document.getElementById("editTitle").textContent="Edit time · "+o.name; setHM("eH","eM",spentNow(o)); document.getElementById("eStart").value=""; document.getElementById("eEnd").value=""; document.getElementById("editOverlay").classList.add("show"); }
+  function openEdit(o){ editId=o.id; document.getElementById("editTitle").textContent="Edit time · "+o.name; setHM("eH","eM",spentNow(o));
+    const sw=document.getElementById("eStartField"); sw.innerHTML=""; editStartField=makeTimeField(winStart()); sw.appendChild(editStartField);
+    const ew=document.getElementById("eEndField"); ew.innerHTML=""; editEndField=makeTimeField(winStart()+60); ew.appendChild(editEndField);
+    document.getElementById("editOverlay").classList.add("show"); }
   function addSession(){
     const o=findEntity(editId); if(!o)return;
-    const s=document.getElementById("eStart").value, e=document.getElementById("eEnd").value;
-    if(!s||!e)return alert("Pick a start and end time.");
+    const sMin=editStartField.getValue(), eMin=editEndField.getValue();
     // place the session within the current cycle by clock time (wraps past midnight if needed)
     const [w0]=cycleWindow(); const dsMin=settings().dayStartMin||0;
-    let so=((toMin(s)-dsMin)%1440+1440)%1440; let eo=((toMin(e)-dsMin)%1440+1440)%1440; if(eo<=so)eo+=1440;
+    let so=((sMin-dsMin)%1440+1440)%1440; let eo=((eMin-dsMin)%1440+1440)%1440; if(eo<=so)eo+=1440;
     const isAct=day().acts.some(x=>x.id===o.id);
     logSession(o.id, isAct?"act":"task", o.name, o.color, w0+so*60000, w0+eo*60000);
     persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack();
@@ -1289,13 +1308,13 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const wrap=document.getElementById("sActWrap"); wrap.innerHTML="";
     slotSelect=makeSelect(items, preId||items[0].value);
     wrap.appendChild(slotSelect);
-    document.getElementById("sStart").value=fromMin(winStart());
-    document.getElementById("sEnd").value=fromMin(winStart()+60);
+    const sw=document.getElementById("sStartField"); sw.innerHTML=""; slotStartField=makeTimeField(winStart()); sw.appendChild(slotStartField);
+    const ew=document.getElementById("sEndField"); ew.innerHTML=""; slotEndField=makeTimeField(winStart()+60); ew.appendChild(slotEndField);
     document.getElementById("slotOverlay").classList.add("show");
   }
   function saveSlot(){
     const id=slotSelect?slotSelect.getValue():null; if(!id){ alert("Pick an activity."); return; }
-    const s=toMin(document.getElementById("sStart").value), e=toMin(document.getElementById("sEnd").value);
+    const s=slotStartField.getValue(), e=slotEndField.getValue();
     if(e===s){ alert("Start and end can't be the same time."); return; }
     // end before start is allowed = the block runs past midnight into the next day (e.g. sleep 10pm–6am)
     const a=day().acts.find(x=>x.id===id); if(!a)return;
@@ -1325,9 +1344,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("sortHours").onclick=()=>applySort("hours");
   document.getElementById("viewToggle").onclick=toggleView;
   (function(){
-    const inp=document.getElementById("dayStartInput"), saveBtn=document.getElementById("dayStartSave"), saved=document.getElementById("dayStartSaved");
-    inp.oninput=()=>{ saveBtn.style.display=""; saved.style.display="none"; };
-    saveBtn.onclick=()=>{ if(!inp.value)return; settings().dayStartMin=toMin(inp.value); persist(); saveBtn.style.display="none"; saved.style.display="inline"; setTimeout(()=>{ saved.style.display="none"; },2000); if(activeTab==="report")renderReport(); };
+    const saveBtn=document.getElementById("dayStartSave"), saved=document.getElementById("dayStartSaved");
+    saveBtn.onclick=()=>{ if(!dayStartField)return; settings().dayStartMin=dayStartField.getValue(); persist(); saveBtn.style.display="none"; saved.style.display="inline"; setTimeout(()=>{ saved.style.display="none"; },2000); render(); };
   })();
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
