@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 10;
+  var APP_VERSION = 11;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -172,6 +172,30 @@
   .act .budget{font-weight:800; font-size:15px; color:var(--accent); background:var(--accent-soft); padding:7px 9px; border-radius:6px; font-variant-numeric:tabular-nums}
   .act .del{background:transparent; border:none; color:var(--muted); width:34px; height:34px; border-radius:6px; font-size:17px; cursor:pointer}
   .act .del:hover{background:var(--panel-soft); color:var(--red)}
+  .act .drag{cursor:grab; color:var(--muted); font-size:18px; padding:0 2px; touch-action:none; user-select:none; line-height:1}
+  .act.dragging{opacity:.6; border-color:var(--accent); transform:scale(1.02); box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .act .schedbtn{background:var(--panel-soft); border:1px solid var(--line); color:var(--accent); font-weight:700;
+    border-radius:7px; padding:5px 10px; font-size:12px; cursor:pointer; white-space:nowrap}
+  .act .schedbtn:hover{border-color:var(--accent)}
+
+  /* list toolbar */
+  .listtools{display:flex; align-items:center; gap:8px; margin-bottom:12px}
+  .listtools .lt{background:var(--panel); border:1px solid var(--line); color:var(--muted); font-weight:650;
+    border-radius:8px; padding:7px 12px; font-size:13px; cursor:pointer}
+  .listtools .lt.active{color:var(--accent); border-color:var(--accent); background:var(--accent-soft)}
+  .listtools .lt-sp{flex:1}
+
+  /* compact (grid) view */
+  #actList.compact{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px}
+  @media (max-width:480px){ #actList.compact{grid-template-columns:1fr 1fr} }
+  #actList.compact .act{flex-direction:column; align-items:flex-start; gap:8px; padding:11px; margin-bottom:0}
+  #actList.compact .act .dot{width:100%; height:6px}
+  #actList.compact .act .info b{white-space:normal}
+  #actList.compact .act .budget{font-size:13px; padding:4px 8px}
+  #actList.compact .act .bar{order:5}
+  #actList.compact .act .schedbtn{width:100%; text-align:center}
+  #actList.compact .act .drag{position:absolute; top:8px; right:8px}
+  #actList.compact .act{position:relative}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -350,6 +374,12 @@
         </div>
         <div class="plan-side">
           <div class="section-title">Reserved times <button class="miniadd" id="addActBtn">＋ Add</button></div>
+          <div class="listtools" id="listTools">
+            <button class="lt" id="sortName">A–Z</button>
+            <button class="lt" id="sortHours">Hours</button>
+            <span class="lt-sp"></span>
+            <button class="lt" id="viewToggle" title="Switch layout">▦ Compact</button>
+          </div>
           <div id="actList"></div>
         </div>
       </div>
@@ -585,6 +615,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(!state.settings.theme) state.settings.theme="dark";
     if(!Array.isArray(state.settings.customColors)) state.settings.customColors=[];
     if(!Array.isArray(state.settings.generatedColors)) state.settings.generatedColors=[];
+    if(!state.settings.sortMode) state.settings.sortMode="manual";
+    if(!state.settings.sortDir) state.settings.sortDir="asc";
+    if(!state.settings.viewMode) state.settings.viewMode="list";
     return state.settings;
   }
   function persist(){ saveLocal(); saveCloud(); }
@@ -754,21 +787,80 @@ catch(e){ console.warn("Firebase init failed:", e); }
     ].map(m=>'<div class="metric"><div class="label">'+m[0]+'</div><div class="value">'+m[1]+'</div><div class="hint">'+m[2]+'</div></div>').join("");
   }
 
+  let dragId=null, dragEl=null, didDrag=false;
   function renderActs(){
-    const el=document.getElementById("actList"); el.innerHTML="";
+    const el=document.getElementById("actList");
+    el.className = settings().viewMode==="compact" ? "compact" : "";
+    el.innerHTML="";
+    updateListToolsUI();
     const acts=day().acts;
     if(!acts.length){ el.innerHTML='<div class="empty">No reserved time yet.<br>Add the first block when you are ready.</div>'; return; }
     acts.forEach(a=>{
       const scheduled=(a.slots||[]).reduce((s,x)=>s+(x.end-x.start),0);
       const pct=a.budgetMin?Math.min(100,scheduled/a.budgetMin*100):0;
       const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap"; div.style.cursor="pointer";
+      div.dataset.id=a.id;
+      const status = scheduled
+        ? '<span style="color:var(--muted);font-size:13px">'+durStr(scheduled)+' scheduled</span>'
+        : '<button class="schedbtn" data-sched="'+a.id+'">Schedule in day</button>';
       div.innerHTML='<span class="dot" style="background:'+a.color+'"></span>'+
-        '<div class="info"><b>'+esc(a.name)+'</b><span>'+(scheduled?durStr(scheduled)+" scheduled":"not scheduled yet")+'</span></div>'+
+        '<div class="info"><b>'+esc(a.name)+'</b><div style="margin-top:3px">'+status+'</div></div>'+
         '<span class="budget">'+durStr(a.budgetMin)+'</span>'+
+        '<span class="drag" data-drag="'+a.id+'" title="Drag to reorder">⠿</span>'+
         '<div class="bar" style="width:100%;flex-basis:100%"><i style="width:'+pct+'%;background:'+a.color+'"></i></div>';
-      div.onclick=()=>openAct(a);
+      div.onclick=()=>{ if(didDrag){ didDrag=false; return; } openAct(a); };
+      const sb=div.querySelector("[data-sched]"); if(sb) sb.onclick=(ev)=>{ ev.stopPropagation(); openSlot(a.id); };
+      const dh=div.querySelector("[data-drag]"); if(dh) dh.onpointerdown=(ev)=>startDrag(ev,a.id,div);
       el.appendChild(div);
     });
+  }
+  /* ---- sorting ---- */
+  function updateListToolsUI(){
+    const s=settings();
+    const nb=document.getElementById("sortName"), hb=document.getElementById("sortHours"), vb=document.getElementById("viewToggle");
+    if(!nb) return;
+    const arrow = s.sortDir==="asc"?" ↑":" ↓";
+    nb.classList.toggle("active", s.sortMode==="name"); nb.textContent="A–Z"+(s.sortMode==="name"?arrow:"");
+    hb.classList.toggle("active", s.sortMode==="hours"); hb.textContent="Hours"+(s.sortMode==="hours"?arrow:"");
+    vb.textContent = s.viewMode==="compact" ? "☰ List" : "▦ Compact";
+  }
+  function applySort(field){
+    const s=settings();
+    if(s.sortMode===field) s.sortDir = s.sortDir==="asc"?"desc":"asc";
+    else { s.sortMode=field; s.sortDir="asc"; }
+    const acts=day().acts;
+    if(field==="name") acts.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:"base"}));
+    else acts.sort((a,b)=>a.budgetMin-b.budgetMin);
+    if(s.sortDir==="desc") acts.reverse();
+    persist(); renderActs();
+  }
+  function toggleView(){ const s=settings(); s.viewMode = s.viewMode==="compact"?"list":"compact"; persist(); renderActs(); }
+  /* ---- drag reorder (pointer-based, works on touch) ---- */
+  function startDrag(ev,id,el){
+    ev.preventDefault(); ev.stopPropagation();
+    dragId=id; dragEl=el; didDrag=false; el.classList.add("dragging");
+    document.addEventListener("pointermove",onDragMove,{passive:false});
+    document.addEventListener("pointerup",onDragUp,{once:true});
+  }
+  function onDragMove(ev){
+    if(!dragId) return;
+    ev.preventDefault(); didDrag=true;
+    const t=document.elementFromPoint(ev.clientX,ev.clientY);
+    const over=t&&t.closest(".act");
+    if(over&&over!==dragEl&&over.dataset.id){
+      const acts=day().acts;
+      const from=acts.findIndex(a=>a.id===dragId), to=acts.findIndex(a=>a.id===over.dataset.id);
+      if(from>-1&&to>-1){ const [m]=acts.splice(from,1); acts.splice(to,0,m); renderActs();
+        dragEl=document.querySelector('.act[data-id="'+dragId+'"]'); if(dragEl)dragEl.classList.add("dragging"); }
+    }
+  }
+  function onDragUp(){
+    if(dragEl)dragEl.classList.remove("dragging");
+    if(dragId){ settings().sortMode="manual"; persist(); }
+    dragId=null; dragEl=null;
+    document.removeEventListener("pointermove",onDragMove);
+    setTimeout(()=>{ didDrag=false; },50);
+    renderActs();
   }
 
   function renderPie(){
@@ -988,11 +1080,12 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function saveTask(){ const name=document.getElementById("tName").value.trim()||"Task"; day().tasks.push({id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:normColor(taskColor)||taskColor,spentMin:0,runStartTs:null}); persist(); document.getElementById("taskOverlay").classList.remove("show"); renderTrack(); }
 
   /* ---------- slot sheet ---------- */
-  function openSlot(){
+  function openSlot(preId){
     const acts=day().acts;
     if(!acts.length){ alert("Reserve an activity on the Plan tab first."); return; }
     const sel=document.getElementById("sAct"); sel.innerHTML="";
     acts.forEach(a=>{ const o=document.createElement("option"); o.value=a.id; const sched=(a.slots||[]).reduce((s,x)=>s+(x.end-x.start),0); o.textContent=a.name+" ("+durStr(sched)+" / "+durStr(a.budgetMin)+")"; sel.appendChild(o); });
+    if(preId) sel.value=preId;
     const [winS]=winBounds();
     document.getElementById("sStart").value=fromMin(winS);
     document.getElementById("sEnd").value=fromMin(winS+60);
@@ -1025,6 +1118,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("nextDay").onclick=()=>{ current.setDate(current.getDate()+1); render(); };
   document.getElementById("datePicker").onchange=e=>{ if(e.target.value){ const [y,m,d]=e.target.value.split("-").map(Number); current=new Date(y,m-1,d); render(); } };
   document.getElementById("addActBtn").onclick=()=>openAct(null);
+  document.getElementById("sortName").onclick=()=>applySort("name");
+  document.getElementById("sortHours").onclick=()=>applySort("hours");
+  document.getElementById("viewToggle").onclick=toggleView;
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
   document.getElementById("aDelete").onclick=()=>{
