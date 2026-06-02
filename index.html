@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 11;
+  var APP_VERSION = 12;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -197,6 +197,21 @@
   #actList.compact .act .drag{position:absolute; top:8px; right:8px}
   #actList.compact .act{position:relative}
 
+  /* report */
+  .rep-hero{display:flex; flex-direction:column; align-items:center; padding:24px; margin-bottom:16px}
+  .rep-score{font-size:64px; font-weight:850; letter-spacing:-2px; line-height:1}
+  .rep-score-lbl{color:var(--muted); font-size:13px; margin-top:4px; text-transform:uppercase; letter-spacing:.5px}
+  .rep-metrics{display:grid; grid-template-columns:1fr; gap:10px}
+  @media (min-width:560px){ .rep-metrics{grid-template-columns:1fr 1fr} }
+  .rep-card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 14px; box-shadow:var(--shadow-soft)}
+  .rep-card-top{display:flex; justify-content:space-between; align-items:baseline; font-size:14px; font-weight:600}
+  .rep-card-top b{font-size:18px; font-weight:800}
+  .rep-card .bar{margin:9px 0 6px}
+  .rep-hint{color:var(--muted); font-size:12px}
+  .gaprow{display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; flex-wrap:wrap}
+  .gaprow .gaptime{font-weight:600; font-size:13px; flex:1 1 100%}
+  .gaprow select{flex:1; background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:9px 10px; font-size:14px; font-family:inherit}
+
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
   .bar > i{display:block; height:100%; border-radius:99px}
@@ -342,6 +357,7 @@
     <button class="navbtn active" data-tab="plan" title="Plan"><span class="ic">◐</span>Plan</button>
     <button class="navbtn" data-tab="schedule" title="Schedule"><span class="ic">▦</span>Schedule</button>
     <button class="navbtn" data-tab="track" title="Track"><span class="ic">⏱</span>Track</button>
+    <button class="navbtn" data-tab="report" title="Report"><span class="ic">📊</span>Report</button>
     <button class="navbtn" data-tab="settings" title="Settings"><span class="ic">⚙</span>Settings</button>
   </nav>
 
@@ -400,12 +416,22 @@
       <div id="trackList"></div>
     </section>
 
+    <!-- ===== REPORT ===== -->
+    <section class="tab" id="tab-report">
+      <div id="reportBody"></div>
+    </section>
+
     <!-- ===== SETTINGS ===== -->
     <section class="tab" id="tab-settings">
       <div class="setrow" id="accountRow">
         <h3>Account</h3>
         <p id="whoami">—</p>
         <button class="btn-wide" id="btnSignOut" style="background:var(--panel); color:var(--text); border:1px solid var(--line)">Sign out</button>
+      </div>
+      <div class="setrow">
+        <h3>Start of day</h3>
+        <p>When a new day begins. The daily report covers the 24 hours from this time. Untracked gaps are measured within this window.</p>
+        <select id="dayStartSel"></select>
       </div>
       <div class="setrow">
         <h3>Appearance</h3>
@@ -618,6 +644,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(!state.settings.sortMode) state.settings.sortMode="manual";
     if(!state.settings.sortDir) state.settings.sortDir="asc";
     if(!state.settings.viewMode) state.settings.viewMode="list";
+    if(typeof state.settings.dayStartHour!=="number") state.settings.dayStartHour=4;
     return state.settings;
   }
   function persist(){ saveLocal(); saveCloud(); }
@@ -625,9 +652,14 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function day(){
     const k=dkey(current);
     if(!state.days[k]) state.days[k]={acts:[], tasks:[]};
-    const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[];
+    const d=state.days[k]; if(!d.acts)d.acts=[]; if(!d.tasks)d.tasks=[]; if(!d.sessions)d.sessions=[];
     d.acts.forEach(a=>{ if(!a.redeems)a.redeems=[]; if(!a.status)a.status="planned"; });
     return d;
+  }
+  function minOfDay(ts){ const d=new Date(ts); return d.getHours()*60+d.getMinutes()+d.getSeconds()/60; }
+  function logSession(ref, refType, name, color, start, end){
+    if(end<=start) return;
+    day().sessions.push({id:"s"+Date.now()+Math.random().toString(36).slice(2,5), ref, refType, name, color, start:Math.round(start), end:Math.round(end)});
   }
 
   /* ---------- helpers ---------- */
@@ -727,6 +759,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   const TITLES={plan:["Plan","Budget your day, then see what's left."],
     schedule:["Schedule","Place your reserved hours into the day."],
     track:["Track","Record the time you actually spend."],
+    report:["Report","How well you used your day."],
     settings:["Settings","Appearance, calendar & data."]};
   function setTab(t){
     activeTab=t;
@@ -738,6 +771,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     fab.style.display="none";
     fab.setAttribute("aria-label", t==="schedule"?"Place a block":t==="track"?"Add task":"Reserve time");
     fab.title=fab.getAttribute("aria-label");
+    if(t==="settings"){ const ds=document.getElementById("dayStartSel"); if(ds) ds.value=settings().dayStartHour; }
     render();
   }
 
@@ -756,6 +790,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(activeTab==="plan"){ renderActs(); renderPie(); }
     else if(activeTab==="schedule"){ renderSchedule(); }
     else if(activeTab==="track"){ renderTrack(); }
+    else if(activeTab==="report"){ renderReport(); }
   }
 
   function dayStats(){
@@ -1022,8 +1057,12 @@ catch(e){ console.warn("Firebase init failed:", e); }
     persist(); document.getElementById("redeemOverlay").classList.remove("show"); renderTrack(); }
   function toggleTimer(id){
     const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
-    if(a.runStartTs){ a.spentMin=(a.spentMin||0)+(Date.now()-a.runStartTs)/60000; a.runStartTs=null; }
-    else { a.runStartTs=Date.now(); }
+    const isAct=day().acts.some(x=>x.id===id);
+    if(a.runStartTs){
+      const startTs=a.runStartTs, now=Date.now();
+      a.spentMin=(a.spentMin||0)+(now-startTs)/60000; a.runStartTs=null;
+      logSession(id, isAct?"act":"task", a.name, a.color, minOfDay(startTs), minOfDay(now));
+    } else { a.runStartTs=Date.now(); }
     persist(); renderTrack();
   }
   // live timer ticking
@@ -1038,6 +1077,128 @@ catch(e){ console.warn("Firebase init failed:", e); }
     }});
   },1000);
   setInterval(()=>{ if(activeTab==="schedule"&&isToday())renderSchedule(); },60000);
+
+  /* ================= REPORT / day evaluation ================= */
+  // map a clock minute-of-day to an offset within the day window starting at dayStartHour
+  function winStart(){ return settings().dayStartHour*60; }
+  function toOffset(m){ return ((m - winStart())%1440 + 1440)%1440; }
+  // merge [start,end] intervals; returns merged sorted list
+  function mergeIntervals(ivs){
+    const s=ivs.filter(i=>i[1]>i[0]).sort((a,b)=>a[0]-b[0]); const out=[];
+    s.forEach(i=>{ if(out.length&&i[0]<=out[out.length-1][1]) out[out.length-1][1]=Math.max(out[out.length-1][1],i[1]); else out.push(i.slice()); });
+    return out;
+  }
+  // sessions converted to window-offset intervals (split if crossing the window end)
+  function sessionOffsets(filterFn){
+    const out=[];
+    day().sessions.forEach(se=>{ if(filterFn&&!filterFn(se))return;
+      let a=toOffset(se.start), b=a+(se.end-se.start);
+      if(b<=1440){ out.push({a,b,se}); } else { out.push({a,b:1440,se}); out.push({a:0,b:b-1440,se}); }
+    });
+    return out;
+  }
+  function overlapLen(a1,a2,b1,b2){ return Math.max(0, Math.min(a2,b2)-Math.max(a1,b1)); }
+
+  function reportMetrics(){
+    const acts=day().acts, tasks=day().tasks;
+    // 1) Completion
+    let budgetTot=0, doneTot=0;
+    acts.forEach(a=>{ const spent=spentNow(a)+redeemedInto(a.id); budgetTot+=a.budgetMin; doneTot+=Math.min(spent,a.budgetMin); });
+    const completion = budgetTot? doneTot/budgetTot*100 : null;
+    // 2) Adherence: scheduled slot minutes actually covered by a session of the same act (clock time)
+    let schedTot=0, adhered=0;
+    acts.forEach(a=>{ (a.slots||[]).forEach(sl=>{ schedTot+=(sl.end-sl.start);
+      day().sessions.forEach(se=>{ if(se.ref===a.id) adhered+=overlapLen(sl.start,sl.end,se.start,se.end); });
+    }); });
+    const adherence = schedTot? Math.min(100,adhered/schedTot*100) : null;
+    // 3) Optimization: minutes where 2+ sessions run concurrently (clock time) + redeemed
+    const evts=[]; day().sessions.forEach(se=>{ evts.push([se.start,1]); evts.push([se.end,-1]); });
+    evts.sort((x,y)=>x[0]-y[0]||y[1]-x[1]);
+    let depth=0, last=null, overlapMin=0;
+    evts.forEach(ev=>{ if(last!==null && depth>=2) overlapMin+=ev[0]-last; depth+=ev[1]; last=ev[0]; });
+    let redeemTot=0; acts.forEach(a=>(a.redeems||[]).forEach(r=>redeemTot+=r.min));
+    const optimization = overlapMin + redeemTot;
+    // 4) Accounted / gaps within the 24h window
+    const covered = mergeIntervals(sessionOffsets().map(o=>[o.a,o.b]));
+    const accountedMin = covered.reduce((s,i)=>s+(i[1]-i[0]),0);
+    const accounted = accountedMin/1440*100;
+    let wasted=0; day().sessions.forEach(se=>{ if(se.refType==="wasted") wasted+=(se.end-se.start); });
+    // gaps
+    const gaps=[]; let cur=0; covered.forEach(i=>{ if(i[0]>cur)gaps.push([cur,i[0]]); cur=Math.max(cur,i[1]); }); if(cur<1440)gaps.push([cur,1440]);
+    // score
+    let parts=[], wsum=0, ssum=0;
+    if(completion!=null){ parts.push(["Completion",completion,0.4]); }
+    if(adherence!=null){ parts.push(["Adherence",adherence,0.25]); }
+    parts.push(["Accounted",accounted,0.25]);
+    parts.forEach(p=>{ wsum+=p[2]; ssum+=p[1]*p[2]; });
+    const base = wsum? ssum/wsum : 0;
+    const optBonus = Math.min(8, optimization/8); // small bonus for optimizing
+    const score = Math.round(Math.min(100, base + optBonus));
+    return {completion,adherence,optimization,accounted,accountedMin,wasted,gaps,budgetTot,doneTot,schedTot,adhered,score};
+  }
+
+  function offLabel(off){ return fmt12(((off+winStart())%1440)); }
+
+  function renderReport(){
+    const el=document.getElementById("reportBody"); el.innerHTML="";
+    const acts=day().acts;
+    const hasData = acts.length || day().sessions.length;
+    if(!hasData){ el.innerHTML='<div class="empty">Nothing to report yet.<br>Reserve some time on Plan and track what you actually do — your daily evaluation appears here.</div>'; return; }
+    const m=reportMetrics();
+    const scoreColor = m.score>=80?"var(--green)":m.score>=50?"var(--accent)":"var(--red)";
+
+    let html='';
+    // score hero
+    html+='<div class="card rep-hero"><div class="rep-score" style="color:'+scoreColor+'">'+m.score+'</div><div class="rep-score-lbl">Day score / 100</div></div>';
+    // metrics grid
+    html+='<div class="rep-metrics">';
+    html+=repMetric("Reserved-time completion", m.completion, m.completion==null?"No reserved time":durStr(m.doneTot)+" of "+durStr(m.budgetTot)+" done");
+    html+=repMetric("Schedule adherence", m.adherence, m.adherence==null?"Nothing scheduled":durStr(m.adhered)+" of "+durStr(m.schedTot)+" on plan");
+    html+=repMetric("Accounted time", m.accounted, durStr(m.accountedMin)+" of 24h logged");
+    html+='<div class="rep-card"><div class="rep-card-top"><span>Time Usage Optimization</span><b style="color:var(--green)">'+durStr(m.optimization)+'</b></div><div class="rep-hint">time doing two things at once</div></div>';
+    html+='<div class="rep-card"><div class="rep-card-top"><span>Wasted time</span><b style="color:'+(m.wasted>0?"var(--red)":"var(--muted)")+'">'+durStr(m.wasted)+'</b></div><div class="rep-hint">marked as wasted</div></div>';
+    html+='</div>';
+    // gaps
+    const gaps=m.gaps.filter(g=>g[1]-g[0]>=5);
+    html+='<div class="section-title" style="margin-top:22px">Unaccounted gaps ('+durStr(m.gaps.reduce((s,g)=>s+(g[1]-g[0]),0))+')</div>';
+    if(!gaps.length){ html+='<div class="empty" style="padding:14px">Your whole day is accounted for 🎉</div>'; }
+    else { html+='<div id="gapList"></div>'; }
+    el.innerHTML=html;
+
+    if(gaps.length){
+      const gl=document.getElementById("gapList");
+      gaps.forEach((g,i)=>{
+        const row=document.createElement("div"); row.className="gaprow";
+        const sel=document.createElement("select");
+        let opts='<option value="">What did you do?</option>';
+        acts.forEach(a=>opts+='<option value="act:'+a.id+'">'+esc(a.name)+'</option>');
+        day().tasks.forEach(t=>opts+='<option value="task:'+t.id+'">'+esc(t.name)+'</option>');
+        opts+='<option value="wasted">⏳ Wasted time</option>';
+        sel.innerHTML=opts;
+        const btn=document.createElement("button"); btn.className="schedbtn"; btn.textContent="Log";
+        btn.onclick=()=>fillGap(g[0],g[1],sel.value);
+        row.innerHTML='<span class="gaptime">'+offLabel(g[0])+' – '+offLabel(g[1])+' · '+durStr(g[1]-g[0])+'</span>';
+        row.appendChild(sel); row.appendChild(btn);
+        gl.appendChild(row);
+      });
+    }
+  }
+  function repMetric(name,pct,hint){
+    if(pct==null) return '<div class="rep-card"><div class="rep-card-top"><span>'+name+'</span><b style="color:var(--muted)">—</b></div><div class="rep-hint">'+hint+'</div></div>';
+    const col=pct>=80?"var(--green)":pct>=50?"var(--accent)":"var(--red)";
+    return '<div class="rep-card"><div class="rep-card-top"><span>'+name+'</span><b style="color:'+col+'">'+Math.round(pct)+'%</b></div>'+
+      '<div class="bar"><i style="width:'+Math.min(100,pct)+'%;background:'+col+'"></i></div><div class="rep-hint">'+hint+'</div></div>';
+  }
+  function fillGap(offStart,offEnd,val){
+    if(!val){ alert("Pick what you did during this gap."); return; }
+    const start=(offStart+winStart())%1440, end=start+(offEnd-offStart);
+    let name="Wasted", color="var(--muted)", ref=null, refType="wasted";
+    if(val.startsWith("act:")){ const a=day().acts.find(x=>x.id===val.slice(4)); if(a){ name=a.name; color=a.color; ref=a.id; refType="act"; a.spentMin=(a.spentMin||0)+(offEnd-offStart); } }
+    else if(val.startsWith("task:")){ const t=day().tasks.find(x=>x.id===val.slice(5)); if(t){ name=t.name; color=t.color; ref=t.id; refType="task"; t.spentMin=(t.spentMin||0)+(offEnd-offStart); } }
+    else { color="#94a3b8"; }
+    logSession(ref, refType, name, color, start, start+(offEnd-offStart));
+    persist(); renderReport();
+  }
 
   /* ---------- activity sheet ---------- */
   function buildQuick(){ const q=document.getElementById("aQuick"); q.innerHTML=""; QUICK.forEach(n=>{ const b=document.createElement("button"); b.type="button"; b.textContent=n; b.onclick=()=>document.getElementById("aName").value=n; q.appendChild(b); }); }
@@ -1121,6 +1282,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("sortName").onclick=()=>applySort("name");
   document.getElementById("sortHours").onclick=()=>applySort("hours");
   document.getElementById("viewToggle").onclick=toggleView;
+  (function(){ const sel=document.getElementById("dayStartSel"); for(let h=0;h<24;h++){ const o=document.createElement("option"); o.value=h; o.textContent=fmt12(h*60); sel.appendChild(o); } sel.onchange=e=>{ settings().dayStartHour=parseInt(e.target.value)||0; persist(); if(activeTab==="report")renderReport(); }; })();
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
   document.getElementById("aDelete").onclick=()=>{
