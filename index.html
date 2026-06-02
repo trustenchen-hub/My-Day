@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 18;
+  var APP_VERSION = 19;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -240,6 +240,10 @@
   .act.subtask .dot{width:9px; height:9px}
   .chip.subadd{background:transparent; border:1px dashed var(--line); color:var(--muted)}
   .ed-spent{font-size:30px; font-weight:850; letter-spacing:-1px; margin:2px 0 14px}
+  .datehint{font-size:12px; color:var(--accent); font-weight:600; margin-top:5px}
+  .tl-line{position:absolute; left:58px; right:14px; border-top:1px dashed var(--line-soft)}
+  .tl-line .lab{position:absolute; left:-50px; top:-8px; width:44px; text-align:right; font-size:11px; color:var(--muted)}
+  .sess-row.editing{outline:2px solid var(--accent)}
   #eTimer.recording{background:var(--red); color:#fff}
   #eTimer{background:var(--green); color:#fff; width:100%}
   .sess-row{display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-2); border:1px solid var(--line); border-radius:9px; padding:9px 12px; margin-bottom:7px; font-size:13.5px}
@@ -556,12 +560,13 @@
     <h2 id="editTitle">Track</h2>
     <div id="eSpent" class="ed-spent">—</div>
     <button class="btn" id="eTimer">Start tracking</button>
-    <label class="fl">Log when you did it</label>
-    <div class="row2">
-      <div><div class="fl" style="margin:0 0 6px">Start</div><div id="eStartField"></div></div>
-      <div><div class="fl" style="margin:0 0 6px">End</div><div id="eEndField"></div></div>
+    <label class="fl" id="eLogLbl">Log when you did it</label>
+    <div><div class="fl" style="margin:0 0 6px">Start</div><div id="eStartField"></div><div id="eStartDate" class="datehint"></div></div>
+    <div><div class="fl" style="margin:8px 0 6px">End</div><div id="eEndField"></div><div id="eEndDate" class="datehint"></div></div>
+    <div style="display:flex; gap:8px; margin-top:10px">
+      <button class="chip" id="eAddSession">＋ Log this session</button>
+      <button class="chip" id="eCancelEditSession" style="display:none">Cancel edit</button>
     </div>
-    <button class="chip" id="eAddSession" style="margin-top:10px">＋ Log this session</button>
     <label class="fl" id="eSessLbl">Logged sessions</label>
     <div id="eSessions"></div>
     <details style="margin-top:14px"><summary style="color:var(--muted);font-size:13px;cursor:pointer">Adjust total manually</summary>
@@ -955,8 +960,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
       div.innerHTML='<span class="dot" style="background:'+a.color+'"></span>'+
         '<div class="info"><b>'+esc(a.name)+(a.repeat&&a.repeat!=="none"?' <span title="'+repeatLabel(a.repeat)+'" style="color:var(--accent);font-size:12px">↻</span>':'')+'</b><div style="margin-top:3px">'+status+'</div></div>'+
         '<span class="budget">'+durStr(a.budgetMin)+'</span>'+
-        '<span class="drag" data-drag="'+a.id+'" title="Drag to reorder">⠿</span>'+
-        '<div class="bar" style="width:100%;flex-basis:100%"><i style="width:'+pct+'%;background:'+a.color+'"></i></div>';
+        '<span class="drag" data-drag="'+a.id+'" title="Drag to reorder">⠿</span>';
       div.onclick=()=>{ if(didDrag){ didDrag=false; return; } openAct(a); };
       const sb=div.querySelector("[data-sched]"); if(sb) sb.onclick=(ev)=>{ ev.stopPropagation(); openSlot(a.id); };
       const dh=div.querySelector("[data-drag]"); if(dh) dh.onpointerdown=(ev)=>startDrag(ev,a.id,div);
@@ -1085,17 +1089,22 @@ catch(e){ console.warn("Firebase init failed:", e); }
 
     // timeline (24h cycle starting at day-start)
     const tl=document.getElementById("timeline"); tl.innerHTML="";
-    const px=48; const startH=Math.floor(ws/60);
-    for(let i=0;i<24;i++){ const row=document.createElement("div"); row.className="tl-hour";
-      const lab=document.createElement("div"); lab.className="lab"; let hh=((startH+i)%24+24)%24; const ap=hh>=12?"p":"a"; let h12=hh%12||12; lab.textContent=h12+ap; row.appendChild(lab); tl.appendChild(row); }
-    const topPad = (ws%60)/60*px; // shift so labels line up if day-start isn't on the hour
+    const px=48, PAD=12;
+    tl.style.height=(24*px+PAD*2)+"px"; tl.style.minHeight="0";
+    // absolute hour gridlines, placed at their true position relative to the day-start
+    const firstHourOffset=(60-(ws%60))%60; // minutes from day-start to the first whole clock hour
+    for(let m=firstHourOffset; m<=1440; m+=60){
+      const ln=document.createElement("div"); ln.className="tl-line"; ln.style.top=(m/60*px+PAD)+"px";
+      const lab=document.createElement("div"); lab.className="lab"; let H=Math.floor(((ws+m)%1440)/60)%24; const ap=H>=12?"p":"a"; let h12=H%12||12; lab.textContent=h12+ap;
+      ln.appendChild(lab); tl.appendChild(ln);
+    }
     slots.forEach(s=>{ if(s.len<=0)return;
       const div=document.createElement("div"); div.className="tl-block";
-      div.style.top=(s.off/60*px+12-topPad)+"px"; div.style.height=Math.max(20,s.len/60*px-4)+"px"; div.style.background=s.color;
+      div.style.top=(s.off/60*px+PAD)+"px"; div.style.height=Math.max(18,s.len/60*px-3)+"px"; div.style.background=s.color;
       div.innerHTML='<b>'+esc(s.name)+'</b>'+(s.len>=34?'<small>'+fmt12(s.start)+' – '+fmt12(s.end)+'</small>':'');
       div.onclick=()=>{ if(confirm("Remove this scheduled block?")){ const act=acts.find(x=>x.id===s.actId); act.slots=act.slots.filter(z=>!(z.start===s.raw.start&&z.end===s.raw.end)); persist(); render(); } };
       tl.appendChild(div); });
-    if(isToday()){ const nm=new Date().getHours()*60+new Date().getMinutes(); const off=toOffset(nm); const ln=document.createElement("div"); ln.className="tl-now"; ln.style.top=(off/60*px+12-topPad)+"px"; tl.appendChild(ln); }
+    if(isToday()){ const nm=new Date().getHours()*60+new Date().getMinutes(); const off=toOffset(nm); const ln=document.createElement("div"); ln.className="tl-now"; ln.style.top=(off/60*px+PAD)+"px"; tl.appendChild(ln); }
   }
 
   /* track */
@@ -1137,13 +1146,26 @@ catch(e){ console.warn("Firebase init failed:", e); }
   }
 
   /* ---- track editor (opened by tapping a card) ---- */
-  let editId=null;
+  let editId=null, editingSessionId=null;
+  function fmtDateShort(ts){ return new Date(ts).toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}); }
+  function editFieldTimes(){ // resolve the two time fields to absolute timestamps in the current cycle
+    const [w0]=cycleWindow(); const ds=settings().dayStartMin||0;
+    let so=((editStartField.getValue()-ds)%1440+1440)%1440;
+    let eo=((editEndField.getValue()-ds)%1440+1440)%1440; if(eo<=so)eo+=1440;
+    return {startTs:w0+so*60000, endTs:w0+eo*60000};
+  }
+  function updateDateHints(){
+    if(!editStartField) return;
+    const t=editFieldTimes();
+    document.getElementById("eStartDate").textContent="📅 "+fmtDateShort(t.startTs);
+    document.getElementById("eEndDate").textContent="📅 "+fmtDateShort(t.endTs);
+  }
   function openEdit(o){
-    editId=o.id;
+    editId=o.id; editingSessionId=null;
     const isAct=day().acts.some(x=>x.id===o.id);
     document.getElementById("editTitle").textContent=o.name;
-    const sw=document.getElementById("eStartField"); sw.innerHTML=""; editStartField=makeTimeField(winStart()); sw.appendChild(editStartField);
-    const ew=document.getElementById("eEndField"); ew.innerHTML=""; editEndField=makeTimeField(winStart()+60); ew.appendChild(editEndField);
+    const sw=document.getElementById("eStartField"); sw.innerHTML=""; editStartField=makeTimeField(winStart(),updateDateHints); sw.appendChild(editStartField);
+    const ew=document.getElementById("eEndField"); ew.innerHTML=""; editEndField=makeTimeField(winStart()+60,updateDateHints); ew.appendChild(editEndField);
     setHM("eH","eM",spentNow(o));
     // delete (only for custom tasks; reserved times are deleted from Plan)
     const del=document.getElementById("eDelete"); del.style.display = isAct?"none":"block";
@@ -1159,28 +1181,36 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const total=spentNow(o);
     document.getElementById("eSpent").textContent = o.runStartTs? fmtSec(total) : (durStr(total)+(isAct?" of "+durStr(o.budgetMin):" tracked"));
     const tb=document.getElementById("eTimer"); tb.textContent=o.runStartTs?"Stop tracking":"Start tracking"; tb.classList.toggle("recording",!!o.runStartTs);
+    updateDateHints();
+    // edit-session UI state
+    document.getElementById("eAddSession").textContent = editingSessionId?"Update session":"＋ Log this session";
+    document.getElementById("eCancelEditSession").style.display = editingSessionId?"inline-block":"none";
+    document.getElementById("eLogLbl").textContent = editingSessionId?"Editing a logged session":"Log when you did it";
     // logged sessions for this entity in this cycle
     const lst=document.getElementById("eSessions"); lst.innerHTML="";
     const [w0,w1]=cycleWindow();
     const mine=(state.sessions||[]).filter(se=>se.ref===o.id && se.endTs>w0 && se.startTs<w1).sort((a,b)=>a.startTs-b.startTs);
     document.getElementById("eSessLbl").style.display = mine.length?"block":"none";
-    mine.forEach(se=>{ const r=document.createElement("div"); r.className="sess-row";
-      const a=Math.max(se.startTs,w0), b=Math.min(se.endTs,w1);
-      r.innerHTML='<span>'+fmt12((new Date(se.startTs).getHours()*60+new Date(se.startTs).getMinutes()))+' – '+fmt12((new Date(se.endTs).getHours()*60+new Date(se.endTs).getMinutes()))+' · '+durStr((b-a)/60000)+'</span><span class="sx" title="Remove">✕</span>';
-      r.querySelector(".sx").onclick=()=>{ state.sessions=state.sessions.filter(x=>x.id!==se.id); persist(); refreshEditor(); renderTrack(); };
+    mine.forEach(se=>{ const r=document.createElement("div"); r.className="sess-row"+(se.id===editingSessionId?" editing":"");
+      const sd=new Date(se.startTs), ed=new Date(se.endTs);
+      const sameDay=sd.toDateString()===ed.toDateString();
+      const dateTxt=fmtDateShort(se.startTs)+(sameDay?"":" → "+fmtDateShort(se.endTs));
+      r.innerHTML='<span><b>'+dateTxt+'</b> · '+fmt12(sd.getHours()*60+sd.getMinutes())+' – '+fmt12(ed.getHours()*60+ed.getMinutes())+' · '+durStr((se.endTs-se.startTs)/60000)+'</span><span class="sx" title="Remove">✕</span>';
+      r.querySelector(".sx").onclick=(e)=>{ e.stopPropagation(); state.sessions=state.sessions.filter(x=>x.id!==se.id); if(editingSessionId===se.id)editingSessionId=null; persist(); refreshEditor(); renderTrack(); };
+      r.style.cursor="pointer";
+      r.onclick=()=>{ editingSessionId=se.id; editStartField.setValue(sd.getHours()*60+sd.getMinutes()); editEndField.setValue(ed.getHours()*60+ed.getMinutes()); refreshEditor(); };
       lst.appendChild(r);
     });
   }
   function editorTimer(){ const o=findEntity(editId); if(!o)return; toggleTimer(o.id); refreshEditor(); }
   function addSession(){
     const o=findEntity(editId); if(!o)return;
-    const sMin=editStartField.getValue(), eMin=editEndField.getValue();
-    const [w0]=cycleWindow(); const dsMin=settings().dayStartMin||0;
-    let so=((sMin-dsMin)%1440+1440)%1440; let eo=((eMin-dsMin)%1440+1440)%1440; if(eo<=so)eo+=1440;
-    const isAct=day().acts.some(x=>x.id===o.id);
-    logSession(o.id, isAct?"act":"task", o.name, o.color, w0+so*60000, w0+eo*60000);
+    const t=editFieldTimes();
+    if(editingSessionId){ const se=(state.sessions||[]).find(x=>x.id===editingSessionId); if(se){ se.startTs=t.startTs; se.endTs=t.endTs; } editingSessionId=null; }
+    else { const isAct=day().acts.some(x=>x.id===o.id); logSession(o.id, isAct?"act":"task", o.name, o.color, t.startTs, t.endTs); }
     persist(); refreshEditor(); renderTrack();
   }
+  function cancelEditSession(){ editingSessionId=null; refreshEditor(); }
   function setTotalManual(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=Math.max(0, hmToMin("eH","eM")-sessionMinFor(o.id)); persist(); refreshEditor(); renderTrack(); }
   function deleteEditingTask(){
     const o=findEntity(editId); if(!o)return; if(day().acts.some(x=>x.id===o.id))return;
@@ -1461,6 +1491,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("eCancel").onclick=()=>document.getElementById("editOverlay").classList.remove("show");
   document.getElementById("eTimer").onclick=editorTimer;
   document.getElementById("eAddSession").onclick=addSession;
+  document.getElementById("eCancelEditSession").onclick=cancelEditSession;
   document.getElementById("eSetTotal").onclick=setTotalManual;
   document.getElementById("eDelete").onclick=deleteEditingTask;
   document.getElementById("editOverlay").onclick=e=>{ if(e.target.id==="editOverlay")document.getElementById("editOverlay").classList.remove("show"); };
