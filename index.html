@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 12;
+  var APP_VERSION = 13;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -211,6 +211,22 @@
   .gaprow{display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; flex-wrap:wrap}
   .gaprow .gaptime{font-weight:600; font-size:13px; flex:1 1 100%}
   .gaprow select{flex:1; background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:9px 10px; font-size:14px; font-family:inherit}
+  .gaprow .cselect{flex:1 1 70%}
+  /* custom dropdown (matches app style) */
+  .cselect{position:relative; width:100%}
+  .cselect-btn{width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;
+    background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:12px;
+    padding:13px 14px; font-size:16px; font-family:inherit; cursor:pointer; text-align:left}
+  .cselect-btn .cchev{color:var(--muted); font-size:13px; transition:transform .18s}
+  .cselect-btn.open .cchev{transform:rotate(180deg)}
+  .cselect-menu{position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:80;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow);
+    max-height:240px; overflow:auto; padding:6px; display:none}
+  .cselect-menu.open{display:block; animation:fade .14s}
+  .cselect-opt{padding:11px 12px; border-radius:9px; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px}
+  .cselect-opt:hover{background:var(--panel)}
+  .cselect-opt.sel{background:var(--accent); color:#06211e; font-weight:700}
+  .cselect-opt .ck{opacity:0} .cselect-opt.sel .ck{opacity:1}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -430,8 +446,12 @@
       </div>
       <div class="setrow">
         <h3>Start of day</h3>
-        <p>When a new day begins. The daily report covers the 24 hours from this time. Untracked gaps are measured within this window.</p>
-        <select id="dayStartSel"></select>
+        <p>When a new day begins — usually when you go to sleep. The daily report covers the 24 hours from this time. Enter any exact time (e.g. 10:30 PM).</p>
+        <div class="hm" style="gap:10px; align-items:center">
+          <input type="time" id="dayStartInput" style="max-width:160px" />
+          <button class="btn save" id="dayStartSave" style="display:none; padding:11px 18px; flex:none">Save</button>
+          <span id="dayStartSaved" style="display:none; color:var(--green); font-size:13px; font-weight:600">Saved ✓</span>
+        </div>
       </div>
       <div class="setrow">
         <h3>Appearance</h3>
@@ -547,32 +567,13 @@
   </div>
 </div>
 
-<!-- Redeem sheet -->
-<div class="overlay" id="redeemOverlay">
-  <div class="sheet">
-    <h2 id="redeemTitle">Redeem time</h2>
-    <p style="color:var(--muted); font-size:14px; margin:0 0 6px">Time you spent on something else during this block — it gets credited to that task too.</p>
-    <label class="fl">What did you actually do?</label>
-    <input type="text" id="rName" placeholder="e.g. Reading, Side project" autocomplete="off" list="rNames" />
-    <datalist id="rNames"></datalist>
-    <label class="fl">How long?</label>
-    <div class="hm">
-      <input type="number" id="rH" min="0" max="24" value="0" /><span>h</span>
-      <input type="number" id="rM" min="0" max="59" value="30" /><span>m</span>
-    </div>
-    <div class="sheet-actions">
-      <button class="btn cancel" id="rCancel">Cancel</button>
-      <button class="btn save" id="rSave">Redeem</button>
-    </div>
-  </div>
-</div>
 
 <!-- Schedule slot sheet -->
 <div class="overlay" id="slotOverlay">
   <div class="sheet">
     <h2>Place a block</h2>
     <label class="fl">Which reserved activity?</label>
-    <select id="sAct"></select>
+    <div id="sActWrap"></div>
     <div class="row2">
       <div><label class="fl">Start</label><input type="time" id="sStart" /></div>
       <div><label class="fl">End</label><input type="time" id="sEnd" /></div>
@@ -613,7 +614,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   let currentUser=null;
   let current=new Date();
   let activeTab="plan";
-  let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1;
+  let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1, slotSelect=null;
 
   /* ---------- storage (local cache + Firestore cloud) ---------- */
   function lkey(){ return KEY+"."+(currentUser?currentUser.uid:"anon"); }
@@ -644,7 +645,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(!state.settings.sortMode) state.settings.sortMode="manual";
     if(!state.settings.sortDir) state.settings.sortDir="asc";
     if(!state.settings.viewMode) state.settings.viewMode="list";
-    if(typeof state.settings.dayStartHour!=="number") state.settings.dayStartHour=4;
+    if(typeof state.settings.dayStartMin!=="number") state.settings.dayStartMin = (typeof state.settings.dayStartHour==="number"? state.settings.dayStartHour*60 : 240);
     return state.settings;
   }
   function persist(){ saveLocal(); saveCloud(); }
@@ -668,6 +669,23 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function fmt12(m){ m=((m%1440)+1440)%1440; let h=Math.floor(m/60); const mm=m%60; const ap=h>=12?"pm":"am"; h=h%12||12; return h+(mm?":"+String(mm).padStart(2,"0"):"")+ap; }
   function rangeStr(s,e){ return s===0&&e===DAY_MIN?"All day":fmt12(s)+" – "+fmt12(e); }
   function durStr(mins){ mins=Math.round(mins); if(mins<=0)return"0m"; const h=Math.floor(mins/60),m=mins%60; return (h?h+"h":"")+(m?(h?" ":"")+m+"m":"")||"0m"; }
+  function fmtSec(mins){ let s=Math.max(0,Math.round(mins*60)); const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60; if(h)return h+"h "+m+"m "+ss+"s"; if(m)return m+"m "+String(ss).padStart(2,"0")+"s"; return ss+"s"; }
+  // styled dropdown that matches the app (replaces ugly native <select>)
+  function closeAllSelects(){ document.querySelectorAll(".cselect-menu.open").forEach(m=>m.classList.remove("open")); document.querySelectorAll(".cselect-btn.open").forEach(b=>b.classList.remove("open")); }
+  function makeSelect(items, value, onChange){
+    const wrap=document.createElement("div"); wrap.className="cselect";
+    const btn=document.createElement("button"); btn.type="button"; btn.className="cselect-btn";
+    const menu=document.createElement("div"); menu.className="cselect-menu";
+    let cur=value!=null?value:(items[0]&&items[0].value);
+    const labelFor=v=>{ const it=items.find(i=>i.value===v); return it?it.label:(items[0]?items[0].label:""); };
+    const paint=()=>{ btn.innerHTML='<span>'+esc(labelFor(cur))+'</span><span class="cchev">▾</span>'; [...menu.children].forEach((c,i)=>c.classList.toggle("sel",items[i].value===cur)); };
+    items.forEach(it=>{ const o=document.createElement("div"); o.className="cselect-opt"; o.innerHTML='<span>'+esc(it.label)+'</span><span class="ck">✓</span>'; o.onclick=(e)=>{ e.stopPropagation(); cur=it.value; paint(); menu.classList.remove("open"); btn.classList.remove("open"); onChange&&onChange(cur); }; menu.appendChild(o); });
+    btn.onclick=(e)=>{ e.stopPropagation(); const open=menu.classList.contains("open"); closeAllSelects(); if(!open){ menu.classList.add("open"); btn.classList.add("open"); } };
+    wrap.appendChild(btn); wrap.appendChild(menu); paint();
+    wrap.getValue=()=>cur; wrap.setValue=v=>{ cur=v; paint(); };
+    return wrap;
+  }
+  document.addEventListener("click",closeAllSelects);
   function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   function isToday(){ return dkey(new Date())===dkey(current); }
   function normColor(c){
@@ -735,14 +753,14 @@ catch(e){ console.warn("Firebase init failed:", e); }
   }
   const DAY_MIN=1440;
   function allocatedMin(){ return day().acts.reduce((s,a)=>s+(a.budgetMin||0),0); }
-  function scheduledMin(){ return day().acts.reduce((s,a)=>s+(a.slots||[]).reduce((y,x)=>y+(x.end-x.start),0),0); }
-  function redeemedMin(){ return day().acts.reduce((s,a)=>s+(a.redeems||[]).reduce((y,r)=>y+r.min,0),0); }
-  function trackedMin(){ return allEntities().reduce((s,o)=>s+spentNow(o),0)+redeemedMin(); }
+  function scheduledMin(){ return day().acts.reduce((s,a)=>s+(a.slots||[]).reduce((y,x)=>y+slotDur(x),0),0); }
+  function redeemedMin(){ return 0; }
+  function trackedMin(){ return allEntities().reduce((s,o)=>s+spentNow(o),0); }
   function spentNow(a){ let s=a.spentMin||0; if(a.runStartTs) s+=(Date.now()-a.runStartTs)/60000; return s; }
   function allEntities(){ return [...day().acts, ...day().tasks]; }
   function findEntity(id){ return day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); }
-  function redeemedInto(id){ let s=0; day().acts.forEach(a=>(a.redeems||[]).forEach(r=>{ if(r.toId===id) s+=r.min; })); return s; }
-  function totalSpent(o){ return spentNow(o)+redeemedInto(o.id); }
+  function redeemedInto(id){ return 0; }
+  function totalSpent(o){ return spentNow(o); }
   function hmToMin(hEl,mEl){ return (parseInt(document.getElementById(hEl).value)||0)*60+(parseInt(document.getElementById(mEl).value)||0); }
   function setHM(hEl,mEl,mins){ mins=Math.max(0,Math.round(mins)); document.getElementById(hEl).value=Math.floor(mins/60); document.getElementById(mEl).value=mins%60; }
 
@@ -771,7 +789,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     fab.style.display="none";
     fab.setAttribute("aria-label", t==="schedule"?"Place a block":t==="track"?"Add task":"Reserve time");
     fab.title=fab.getAttribute("aria-label");
-    if(t==="settings"){ const ds=document.getElementById("dayStartSel"); if(ds) ds.value=settings().dayStartHour; }
+    if(t==="settings"){ const ds=document.getElementById("dayStartInput"); if(ds){ ds.value=fromMin(settings().dayStartMin); document.getElementById("dayStartSave").style.display="none"; document.getElementById("dayStartSaved").style.display="none"; } }
     render();
   }
 
@@ -831,7 +849,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const acts=day().acts;
     if(!acts.length){ el.innerHTML='<div class="empty">No reserved time yet.<br>Add the first block when you are ready.</div>'; return; }
     acts.forEach(a=>{
-      const scheduled=(a.slots||[]).reduce((s,x)=>s+(x.end-x.start),0);
+      const scheduled=(a.slots||[]).reduce((s,x)=>s+slotDur(x),0);
       const pct=a.budgetMin?Math.min(100,scheduled/a.budgetMin*100):0;
       const div=document.createElement("div"); div.className="act"; div.style.flexWrap="wrap"; div.style.cursor="pointer";
       div.dataset.id=a.id;
@@ -950,37 +968,38 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim()||"#888"; }
 
   /* schedule */
-  function winBounds(){ return [0, DAY_MIN]; }
+  function slotDur(sl){ const d=(sl.end-sl.start+1440)%1440; return d===0?1440:d; }
   function renderSchedule(){
     const acts=day().acts;
-    const [winS,winE]=winBounds();
-    // collect scheduled slots
+    const ws=winStart();
+    // collect scheduled slots, positioned by offset within the cycle (starts at day-start)
     const slots=[];
-    acts.forEach(a=>(a.slots||[]).forEach(s=>slots.push({...s,name:a.name,color:a.color,actId:a.id})));
-    slots.sort((a,b)=>a.start-b.start);
+    acts.forEach(a=>(a.slots||[]).forEach(s=>{ const off=toOffset(s.start); let len=slotDur(s); if(off+len>1440)len=1440-off; slots.push({off,len,start:s.start,end:s.end,name:a.name,color:a.color,actId:a.id,raw:s}); }));
+    slots.sort((a,b)=>a.off-b.off);
 
-    // gaps
-    const busy=slots.map(s=>[Math.max(s.start,winS),Math.min(s.end,winE)]).filter(b=>b[1]>b[0]).sort((a,b)=>a[0]-b[0]);
+    // gaps (in offset space 0..1440)
+    const busy=slots.map(s=>[s.off,s.off+s.len]).filter(b=>b[1]>b[0]).sort((a,b)=>a[0]-b[0]);
     const merged=[]; busy.forEach(b=>{ if(merged.length&&b[0]<=merged[merged.length-1][1]) merged[merged.length-1][1]=Math.max(merged[merged.length-1][1],b[1]); else merged.push(b.slice()); });
-    const gaps=[]; let cur=winS; merged.forEach(b=>{ if(b[0]>cur)gaps.push([cur,b[0]]); cur=Math.max(cur,b[1]); }); if(cur<winE)gaps.push([cur,winE]);
+    const gaps=[]; let cur=0; merged.forEach(b=>{ if(b[0]>cur)gaps.push([cur,b[0]]); cur=Math.max(cur,b[1]); }); if(cur<1440)gaps.push([cur,1440]);
 
     const gel=document.getElementById("gaps"); gel.innerHTML="";
     if(!gaps.length){ gel.innerHTML='<div class="empty">No open time remains.</div>'; }
     else gaps.forEach(g=>{ const x=document.createElement("div"); x.className="gap";
-      x.innerHTML='<span style="font-weight:600">'+rangeStr(g[0],g[1])+'</span><span class="dur">'+durStr(g[1]-g[0])+' free</span>'; gel.appendChild(x); });
+      x.innerHTML='<span style="font-weight:600">'+rangeStr((g[0]+ws)%1440,(g[1]+ws)%1440)+'</span><span class="dur">'+durStr(g[1]-g[0])+' free</span>'; gel.appendChild(x); });
 
-    // timeline
+    // timeline (24h cycle starting at day-start)
     const tl=document.getElementById("timeline"); tl.innerHTML="";
-    const startH=Math.floor(winS/60), endH=Math.ceil(winE/60), px=48;
-    for(let h=startH; h<endH; h++){ const row=document.createElement("div"); row.className="tl-hour";
-      const lab=document.createElement("div"); lab.className="lab"; let hh=((h%24)+24)%24; const ap=hh>=12?"p":"a"; let h12=hh%12||12; lab.textContent=h12+ap; row.appendChild(lab); tl.appendChild(row); }
-    slots.forEach(s=>{ const a=Math.max(s.start,winS), b=Math.min(s.end,winE); if(b<=a)return;
+    const px=48; const startH=Math.floor(ws/60);
+    for(let i=0;i<24;i++){ const row=document.createElement("div"); row.className="tl-hour";
+      const lab=document.createElement("div"); lab.className="lab"; let hh=((startH+i)%24+24)%24; const ap=hh>=12?"p":"a"; let h12=hh%12||12; lab.textContent=h12+ap; row.appendChild(lab); tl.appendChild(row); }
+    const topPad = (ws%60)/60*px; // shift so labels line up if day-start isn't on the hour
+    slots.forEach(s=>{ if(s.len<=0)return;
       const div=document.createElement("div"); div.className="tl-block";
-      div.style.top=((a-startH*60)/60*px+12)+"px"; div.style.height=Math.max(20,(b-a)/60*px-4)+"px"; div.style.background=s.color;
-      div.innerHTML='<b>'+esc(s.name)+'</b>'+((b-a)>=34?'<small>'+fmt12(s.start)+' – '+fmt12(s.end)+'</small>':'');
-      div.onclick=()=>{ if(confirm("Remove this scheduled block?")){ const act=acts.find(x=>x.id===s.actId); act.slots=act.slots.filter(z=>!(z.start===s.start&&z.end===s.end)); persist(); render(); } };
+      div.style.top=(s.off/60*px+12-topPad)+"px"; div.style.height=Math.max(20,s.len/60*px-4)+"px"; div.style.background=s.color;
+      div.innerHTML='<b>'+esc(s.name)+'</b>'+(s.len>=34?'<small>'+fmt12(s.start)+' – '+fmt12(s.end)+'</small>':'');
+      div.onclick=()=>{ if(confirm("Remove this scheduled block?")){ const act=acts.find(x=>x.id===s.actId); act.slots=act.slots.filter(z=>!(z.start===s.raw.start&&z.end===s.raw.end)); persist(); render(); } };
       tl.appendChild(div); });
-    if(isToday()){ const nm=new Date().getHours()*60+new Date().getMinutes(); if(nm>=startH*60&&nm<=endH*60){ const ln=document.createElement("div"); ln.className="tl-now"; ln.style.top=((nm-startH*60)/60*px+12)+"px"; tl.appendChild(ln); } }
+    if(isToday()){ const nm=new Date().getHours()*60+new Date().getMinutes(); const off=toOffset(nm); const ln=document.createElement("div"); ln.className="tl-now"; ln.style.top=(off/60*px+12-topPad)+"px"; tl.appendChild(ln); }
   }
 
   /* track */
@@ -990,8 +1009,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     // summary
     const sum=document.getElementById("trackSum");
     const tracked=trackedMin();
-    const redeemed=redeemedMin();
-    if(tracked>0){ sum.innerHTML='<span>Tracked <b>'+durStr(tracked)+'</b> today</span>'+(redeemed>0?'<span class="g">↩ <b>'+durStr(redeemed)+'</b> redeemed</span>':''); sum.style.display="flex"; sum.className="tracksum"; }
+    if(tracked>0){ sum.innerHTML='<span>Tracked <b>'+durStr(tracked)+'</b> today</span>'; sum.style.display="flex"; sum.className="tracksum"; }
     else { sum.style.display="none"; }
 
     if(!acts.length && !tasks.length){ el.innerHTML='<div class="empty">No tasks yet.<br>Reserved times appear here automatically.</div>'; return; }
@@ -1020,15 +1038,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const chips=document.createElement("div"); chips.className="chips";
     if(hasBudget){
       const done=document.createElement("button"); done.className="chip"+(a.status==="done"?"":" primary"); done.textContent=a.status==="done"?"✓ Done — edit":"✓ Mark done"; done.onclick=()=>openDone(a); chips.appendChild(done);
-      const red=document.createElement("button"); red.className="chip redeem"; red.textContent="↩ Redeem"; red.onclick=()=>openRedeem(a); chips.appendChild(red);
     }
     const edit=document.createElement("button"); edit.className="chip"; edit.textContent="✎ Edit time"; edit.onclick=()=>openEdit(a); chips.appendChild(edit);
     div.appendChild(chips);
-    // redeem items
-    (a.redeems||[]).forEach(r=>{ const ri=document.createElement("div"); ri.className="redeem-item";
-      ri.innerHTML='<span>↩ <b>'+esc(r.toName)+'</b> · '+durStr(r.min)+' redeemed</span><span class="x">✕</span>';
-      ri.querySelector(".x").onclick=()=>{ a.redeems=a.redeems.filter(z=>z.id!==r.id); persist(); renderTrack(); };
-      div.appendChild(ri); });
     div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
     div.querySelector(".spent").onclick=()=>openEdit(a);
     const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{ if(a.runStartTs)return alert("Stop the timer first."); day().tasks=day().tasks.filter(x=>x.id!==a.id); persist(); renderTrack(); };
@@ -1044,24 +1056,17 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function openDone(a){ doneId=a.id; document.getElementById("doneTitle").textContent="Mark done · "+a.name; setHM("dH","dM", a.status==="done"? spentNow(a) : a.budgetMin); document.getElementById("doneOverlay").classList.add("show"); }
   function saveDone(){ const a=day().acts.find(x=>x.id===doneId); if(!a)return; if(a.runStartTs)a.runStartTs=null; a.spentMin=hmToMin("dH","dM"); a.status="done"; persist(); document.getElementById("doneOverlay").classList.remove("show"); renderTrack(); }
 
-  function openRedeem(a){ redeemId=a.id; document.getElementById("redeemTitle").textContent="Redeem from "+a.name;
-    document.getElementById("rName").value=""; setHM("rH","rM",30);
-    const dl=document.getElementById("rNames"); dl.innerHTML=""; day().tasks.forEach(t=>{ const o=document.createElement("option"); o.value=t.name; dl.appendChild(o); });
-    document.getElementById("redeemOverlay").classList.add("show"); }
-  function saveRedeem(){ const a=day().acts.find(x=>x.id===redeemId); if(!a)return;
-    const name=document.getElementById("rName").value.trim(); const min=hmToMin("rH","rM");
-    if(!name)return alert("What did you actually do?"); if(min<=0)return alert("Enter how long.");
-    let t=day().tasks.find(x=>x.name.toLowerCase()===name.toLowerCase());
-    if(!t){ t={id:"t"+Date.now()+Math.random().toString(36).slice(2,5),name,color:colorAt(day().acts.length+day().tasks.length),spentMin:0,runStartTs:null}; day().tasks.push(t); }
-    a.redeems.push({id:"r"+Date.now()+Math.random().toString(36).slice(2,5),toId:t.id,toName:t.name,min});
-    persist(); document.getElementById("redeemOverlay").classList.remove("show"); renderTrack(); }
   function toggleTimer(id){
     const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
     const isAct=day().acts.some(x=>x.id===id);
     if(a.runStartTs){
       const startTs=a.runStartTs, now=Date.now();
-      a.spentMin=(a.spentMin||0)+(now-startTs)/60000; a.runStartTs=null;
-      logSession(id, isAct?"act":"task", a.name, a.color, minOfDay(startTs), minOfDay(now));
+      a.runStartTs=null;
+      const elapsedSec=(now-startTs)/1000;
+      if(elapsedSec>=60){ // minimum recordable session is 1 minute
+        a.spentMin=(a.spentMin||0)+elapsedSec/60;
+        logSession(id, isAct?"act":"task", a.name, a.color, minOfDay(startTs), minOfDay(now));
+      }
     } else { a.runStartTs=Date.now(); }
     persist(); renderTrack();
   }
@@ -1070,9 +1075,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(activeTab!=="track")return;
     const actIds=new Set(day().acts.map(a=>a.id));
     [...day().acts,...day().tasks].forEach(a=>{ if(a.runStartTs){
-      const inR=redeemedInto(a.id), total=spentNow(a)+inR, hasBudget=actIds.has(a.id);
+      const total=spentNow(a), hasBudget=actIds.has(a.id);
       const se=document.querySelector('[data-spent="'+a.id+'"]'); const bar=document.querySelector('[data-bar="'+a.id+'"]');
-      if(se)se.textContent=hasBudget? durStr(total)+" of "+durStr(a.budgetMin) : durStr(total)+" tracked"+(inR>0?" (incl. "+durStr(inR)+" redeemed)":"");
+      if(se)se.textContent=hasBudget? fmtSec(total)+" of "+durStr(a.budgetMin) : fmtSec(total)+" tracked";
       if(bar){ bar.style.width=(a.budgetMin?Math.min(100,total/a.budgetMin*100):0)+"%"; bar.style.background=total>a.budgetMin?"var(--red)":a.color; }
     }});
   },1000);
@@ -1080,7 +1085,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
 
   /* ================= REPORT / day evaluation ================= */
   // map a clock minute-of-day to an offset within the day window starting at dayStartHour
-  function winStart(){ return settings().dayStartHour*60; }
+  function winStart(){ return settings().dayStartMin||0; }
   function toOffset(m){ return ((m - winStart())%1440 + 1440)%1440; }
   // merge [start,end] intervals; returns merged sorted list
   function mergeIntervals(ivs){
@@ -1092,7 +1097,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function sessionOffsets(filterFn){
     const out=[];
     day().sessions.forEach(se=>{ if(filterFn&&!filterFn(se))return;
-      let a=toOffset(se.start), b=a+(se.end-se.start);
+      let a=toOffset(se.start), b=a+(((se.end-se.start)%1440+1440)%1440);
       if(b<=1440){ out.push({a,b,se}); } else { out.push({a,b:1440,se}); out.push({a:0,b:b-1440,se}); }
     });
     return out;
@@ -1103,26 +1108,26 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const acts=day().acts, tasks=day().tasks;
     // 1) Completion
     let budgetTot=0, doneTot=0;
-    acts.forEach(a=>{ const spent=spentNow(a)+redeemedInto(a.id); budgetTot+=a.budgetMin; doneTot+=Math.min(spent,a.budgetMin); });
+    acts.forEach(a=>{ const spent=spentNow(a); budgetTot+=a.budgetMin; doneTot+=Math.min(spent,a.budgetMin); });
     const completion = budgetTot? doneTot/budgetTot*100 : null;
     // 2) Adherence: scheduled slot minutes actually covered by a session of the same act (clock time)
     let schedTot=0, adhered=0;
-    acts.forEach(a=>{ (a.slots||[]).forEach(sl=>{ schedTot+=(sl.end-sl.start);
-      day().sessions.forEach(se=>{ if(se.ref===a.id) adhered+=overlapLen(sl.start,sl.end,se.start,se.end); });
+    acts.forEach(a=>{ (a.slots||[]).forEach(sl=>{ const so=toOffset(sl.start), slen=slotDur(sl); schedTot+=slen;
+      sessionOffsets(se=>se.ref===a.id).forEach(o=>{ adhered+=overlapLen(so,so+slen,o.a,o.b); });
     }); });
     const adherence = schedTot? Math.min(100,adhered/schedTot*100) : null;
-    // 3) Optimization: minutes where 2+ sessions run concurrently (clock time) + redeemed
-    const evts=[]; day().sessions.forEach(se=>{ evts.push([se.start,1]); evts.push([se.end,-1]); });
-    evts.sort((x,y)=>x[0]-y[0]||y[1]-x[1]);
-    let depth=0, last=null, overlapMin=0;
-    evts.forEach(ev=>{ if(last!==null && depth>=2) overlapMin+=ev[0]-last; depth+=ev[1]; last=ev[0]; });
-    let redeemTot=0; acts.forEach(a=>(a.redeems||[]).forEach(r=>redeemTot+=r.min));
-    const optimization = overlapMin + redeemTot;
+    // 3) Optimization: time spent doing 2+ things at once (auto-detected from overlapping sessions)
+    const offs=sessionOffsets();
+    const oevts=[]; offs.forEach(o=>{ oevts.push([o.a,1]); oevts.push([o.b,-1]); });
+    oevts.sort((x,y)=>x[0]-y[0]||y[1]-x[1]);
+    let odepth=0, olast=null; const byDepth={};
+    oevts.forEach(ev=>{ if(olast!==null && ev[0]>olast && odepth>=1){ byDepth[odepth]=(byDepth[odepth]||0)+(ev[0]-olast); } odepth+=ev[1]; olast=ev[0]; });
+    let optimization=0; Object.keys(byDepth).forEach(d=>{ if(+d>=2) optimization+=byDepth[d]; });
     // 4) Accounted / gaps within the 24h window
     const covered = mergeIntervals(sessionOffsets().map(o=>[o.a,o.b]));
     const accountedMin = covered.reduce((s,i)=>s+(i[1]-i[0]),0);
     const accounted = accountedMin/1440*100;
-    let wasted=0; day().sessions.forEach(se=>{ if(se.refType==="wasted") wasted+=(se.end-se.start); });
+    let wasted=0; day().sessions.forEach(se=>{ if(se.refType==="wasted") wasted+=(((se.end-se.start)%1440+1440)%1440); });
     // gaps
     const gaps=[]; let cur=0; covered.forEach(i=>{ if(i[0]>cur)gaps.push([cur,i[0]]); cur=Math.max(cur,i[1]); }); if(cur<1440)gaps.push([cur,1440]);
     // score
@@ -1134,7 +1139,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
     const base = wsum? ssum/wsum : 0;
     const optBonus = Math.min(8, optimization/8); // small bonus for optimizing
     const score = Math.round(Math.min(100, base + optBonus));
-    return {completion,adherence,optimization,accounted,accountedMin,wasted,gaps,budgetTot,doneTot,schedTot,adhered,score};
+    return {completion,adherence,optimization,byDepth,accounted,accountedMin,wasted,gaps,budgetTot,doneTot,schedTot,adhered,score};
   }
 
   function offLabel(off){ return fmt12(((off+winStart())%1440)); }
@@ -1155,7 +1160,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     html+=repMetric("Reserved-time completion", m.completion, m.completion==null?"No reserved time":durStr(m.doneTot)+" of "+durStr(m.budgetTot)+" done");
     html+=repMetric("Schedule adherence", m.adherence, m.adherence==null?"Nothing scheduled":durStr(m.adhered)+" of "+durStr(m.schedTot)+" on plan");
     html+=repMetric("Accounted time", m.accounted, durStr(m.accountedMin)+" of 24h logged");
-    html+='<div class="rep-card"><div class="rep-card-top"><span>Time Usage Optimization</span><b style="color:var(--green)">'+durStr(m.optimization)+'</b></div><div class="rep-hint">time doing two things at once</div></div>';
+    const depths=Object.keys(m.byDepth).map(Number).filter(d=>d>=2).sort((a,b)=>a-b);
+    const depthHint=depths.length? depths.map(d=>d+"× for "+durStr(m.byDepth[d])).join(" · ") : "no overlapping tasks yet";
+    html+='<div class="rep-card"><div class="rep-card-top"><span>Time Usage Optimization</span><b style="color:var(--green)">'+durStr(m.optimization)+'</b></div><div class="rep-hint">'+depthHint+'</div></div>';
     html+='<div class="rep-card"><div class="rep-card-top"><span>Wasted time</span><b style="color:'+(m.wasted>0?"var(--red)":"var(--muted)")+'">'+durStr(m.wasted)+'</b></div><div class="rep-hint">marked as wasted</div></div>';
     html+='</div>';
     // gaps
@@ -1169,14 +1176,13 @@ catch(e){ console.warn("Firebase init failed:", e); }
       const gl=document.getElementById("gapList");
       gaps.forEach((g,i)=>{
         const row=document.createElement("div"); row.className="gaprow";
-        const sel=document.createElement("select");
-        let opts='<option value="">What did you do?</option>';
-        acts.forEach(a=>opts+='<option value="act:'+a.id+'">'+esc(a.name)+'</option>');
-        day().tasks.forEach(t=>opts+='<option value="task:'+t.id+'">'+esc(t.name)+'</option>');
-        opts+='<option value="wasted">⏳ Wasted time</option>';
-        sel.innerHTML=opts;
+        const items=[{value:"",label:"What did you do?"}];
+        acts.forEach(a=>items.push({value:"act:"+a.id,label:a.name}));
+        day().tasks.forEach(t=>items.push({value:"task:"+t.id,label:t.name}));
+        items.push({value:"wasted",label:"⏳ Wasted time"});
+        const sel=makeSelect(items,"");
         const btn=document.createElement("button"); btn.className="schedbtn"; btn.textContent="Log";
-        btn.onclick=()=>fillGap(g[0],g[1],sel.value);
+        btn.onclick=()=>fillGap(g[0],g[1],sel.getValue());
         row.innerHTML='<span class="gaptime">'+offLabel(g[0])+' – '+offLabel(g[1])+' · '+durStr(g[1]-g[0])+'</span>';
         row.appendChild(sel); row.appendChild(btn);
         gl.appendChild(row);
@@ -1244,18 +1250,19 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function openSlot(preId){
     const acts=day().acts;
     if(!acts.length){ alert("Reserve an activity on the Plan tab first."); return; }
-    const sel=document.getElementById("sAct"); sel.innerHTML="";
-    acts.forEach(a=>{ const o=document.createElement("option"); o.value=a.id; const sched=(a.slots||[]).reduce((s,x)=>s+(x.end-x.start),0); o.textContent=a.name+" ("+durStr(sched)+" / "+durStr(a.budgetMin)+")"; sel.appendChild(o); });
-    if(preId) sel.value=preId;
-    const [winS]=winBounds();
-    document.getElementById("sStart").value=fromMin(winS);
-    document.getElementById("sEnd").value=fromMin(winS+60);
+    const items=acts.map(a=>{ const sched=(a.slots||[]).reduce((s,x)=>s+slotDur(x),0); return {value:a.id,label:a.name+" ("+durStr(sched)+" / "+durStr(a.budgetMin)+")"}; });
+    const wrap=document.getElementById("sActWrap"); wrap.innerHTML="";
+    slotSelect=makeSelect(items, preId||items[0].value);
+    wrap.appendChild(slotSelect);
+    document.getElementById("sStart").value=fromMin(winStart());
+    document.getElementById("sEnd").value=fromMin(winStart()+60);
     document.getElementById("slotOverlay").classList.add("show");
   }
   function saveSlot(){
-    const id=document.getElementById("sAct").value;
+    const id=slotSelect?slotSelect.getValue():null; if(!id){ alert("Pick an activity."); return; }
     const s=toMin(document.getElementById("sStart").value), e=toMin(document.getElementById("sEnd").value);
-    if(e<=s){ alert("End must be after start."); return; }
+    if(e===s){ alert("Start and end can't be the same time."); return; }
+    // end before start is allowed = the block runs past midnight into the next day (e.g. sleep 10pm–6am)
     const a=day().acts.find(x=>x.id===id); if(!a)return;
     (a.slots=a.slots||[]).push({start:s,end:e});
     persist(); document.getElementById("slotOverlay").classList.remove("show"); render();
@@ -1282,7 +1289,11 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("sortName").onclick=()=>applySort("name");
   document.getElementById("sortHours").onclick=()=>applySort("hours");
   document.getElementById("viewToggle").onclick=toggleView;
-  (function(){ const sel=document.getElementById("dayStartSel"); for(let h=0;h<24;h++){ const o=document.createElement("option"); o.value=h; o.textContent=fmt12(h*60); sel.appendChild(o); } sel.onchange=e=>{ settings().dayStartHour=parseInt(e.target.value)||0; persist(); if(activeTab==="report")renderReport(); }; })();
+  (function(){
+    const inp=document.getElementById("dayStartInput"), saveBtn=document.getElementById("dayStartSave"), saved=document.getElementById("dayStartSaved");
+    inp.oninput=()=>{ saveBtn.style.display=""; saved.style.display="none"; };
+    saveBtn.onclick=()=>{ if(!inp.value)return; settings().dayStartMin=toMin(inp.value); persist(); saveBtn.style.display="none"; saved.style.display="inline"; setTimeout(()=>{ saved.style.display="none"; },2000); if(activeTab==="report")renderReport(); };
+  })();
   document.getElementById("aCancel").onclick=closeAct;
   document.getElementById("aSave").onclick=saveAct;
   document.getElementById("aDelete").onclick=()=>{
@@ -1314,9 +1325,6 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("dCancel").onclick=()=>document.getElementById("doneOverlay").classList.remove("show");
   document.getElementById("dSave").onclick=saveDone;
   document.getElementById("doneOverlay").onclick=e=>{ if(e.target.id==="doneOverlay")document.getElementById("doneOverlay").classList.remove("show"); };
-  document.getElementById("rCancel").onclick=()=>document.getElementById("redeemOverlay").classList.remove("show");
-  document.getElementById("rSave").onclick=saveRedeem;
-  document.getElementById("redeemOverlay").onclick=e=>{ if(e.target.id==="redeemOverlay")document.getElementById("redeemOverlay").classList.remove("show"); };
 
   document.getElementById("addSlotBtn").onclick=openSlot;
   document.getElementById("sCancel").onclick=()=>document.getElementById("slotOverlay").classList.remove("show");
