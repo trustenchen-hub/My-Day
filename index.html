@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 17;
+  var APP_VERSION = 18;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -239,6 +239,13 @@
   .act.subtask{margin-left:20px; border-left:3px solid var(--accent)}
   .act.subtask .dot{width:9px; height:9px}
   .chip.subadd{background:transparent; border:1px dashed var(--line); color:var(--muted)}
+  .ed-spent{font-size:30px; font-weight:850; letter-spacing:-1px; margin:2px 0 14px}
+  #eTimer.recording{background:var(--red); color:#fff}
+  #eTimer{background:var(--green); color:#fff; width:100%}
+  .sess-row{display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-2); border:1px solid var(--line); border-radius:9px; padding:9px 12px; margin-bottom:7px; font-size:13.5px}
+  .sess-row .sx{cursor:pointer; color:var(--muted); font-size:16px; padding:0 4px}
+  .act.recording .dot{box-shadow:0 0 0 3px color-mix(in srgb, var(--red) 35%, transparent)}
+  .rec-pill{font-size:11px;font-weight:750;color:var(--red);margin-left:8px}
 
   /* progress (track) */
   .bar{height:8px; background:var(--track); border-radius:999px; overflow:hidden; margin-top:8px}
@@ -543,39 +550,31 @@
   </div>
 </div>
 
-<!-- Edit time sheet (set total + log a past session) -->
+<!-- Track editor sheet (tap a card to open) -->
 <div class="overlay" id="editOverlay">
   <div class="sheet">
-    <h2 id="editTitle">Edit time</h2>
-    <label class="fl">Set total time spent</label>
-    <div class="hm">
-      <input type="number" id="eH" min="0" max="24" /><span>h</span>
-      <input type="number" id="eM" min="0" max="59" /><span>m</span>
+    <h2 id="editTitle">Track</h2>
+    <div id="eSpent" class="ed-spent">—</div>
+    <button class="btn" id="eTimer">Start tracking</button>
+    <label class="fl">Log when you did it</label>
+    <div class="row2">
+      <div><div class="fl" style="margin:0 0 6px">Start</div><div id="eStartField"></div></div>
+      <div><div class="fl" style="margin:0 0 6px">End</div><div id="eEndField"></div></div>
     </div>
-    <label class="fl">Or log a past session (placed on the timeline)</label>
-    <label class="fl" style="margin-top:6px">Start</label><div id="eStartField"></div>
-    <label class="fl">End</label><div id="eEndField"></div>
     <button class="chip" id="eAddSession" style="margin-top:10px">＋ Log this session</button>
+    <label class="fl" id="eSessLbl">Logged sessions</label>
+    <div id="eSessions"></div>
+    <details style="margin-top:14px"><summary style="color:var(--muted);font-size:13px;cursor:pointer">Adjust total manually</summary>
+      <div class="hm" style="margin-top:8px">
+        <input type="number" id="eH" min="0" max="24" /><span>h</span>
+        <input type="number" id="eM" min="0" max="59" /><span>m</span>
+        <button class="chip" id="eSetTotal">Set</button>
+      </div>
+    </details>
+    <div id="eSubWrap" style="margin-top:14px"></div>
+    <button class="btn" id="eDelete" style="display:none; width:100%; margin-top:12px; background:transparent; color:var(--red); border:1px solid var(--line)">Delete this task</button>
     <div class="sheet-actions">
-      <button class="btn cancel" id="eCancel">Cancel</button>
-      <button class="btn save" id="eSave">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- Confirm done sheet -->
-<div class="overlay" id="doneOverlay">
-  <div class="sheet">
-    <h2 id="doneTitle">Mark as done</h2>
-    <p style="color:var(--muted); font-size:14px; margin:0 0 6px">How much did you actually accomplish? Defaults to the full planned time.</p>
-    <label class="fl">Time accomplished</label>
-    <div class="hm">
-      <input type="number" id="dH" min="0" max="24" /><span>h</span>
-      <input type="number" id="dM" min="0" max="59" /><span>m</span>
-    </div>
-    <div class="sheet-actions">
-      <button class="btn cancel" id="dCancel">Cancel</button>
-      <button class="btn save" id="dSave" style="background:var(--green)">✓ Mark done</button>
+      <button class="btn save" id="eCancel" style="width:100%">Done</button>
     </div>
   </div>
 </div>
@@ -1126,54 +1125,71 @@ catch(e){ console.warn("Firebase init failed:", e); }
     opts=opts||{};
     const total=spentNow(a);
     const pct=hasBudget&&a.budgetMin? Math.min(100,total/a.budgetMin*100):0;
-    const div=document.createElement("div"); div.className="act"+(opts.isSub?" subtask":""); div.style.flexWrap="wrap";
-    let spentTxt = hasBudget ? durStr(total)+' of '+durStr(a.budgetMin) : durStr(total)+' tracked';
-    const statusChip = hasBudget ? '<span class="statuschip '+(a.status==="done"?"done":"planned")+'">'+(a.status==="done"?"done":"planned")+'</span>' : '';
+    const rec=!!a.runStartTs;
+    const div=document.createElement("div"); div.className="act"+(opts.isSub?" subtask":"")+(rec?" recording":""); div.style.flexWrap="wrap"; div.style.cursor="pointer";
+    const spentTxt = hasBudget ? durStr(total)+' of '+durStr(a.budgetMin) : durStr(total)+' tracked';
     div.innerHTML=
       '<span class="dot" style="background:'+a.color+'"></span>'+
-      '<div class="info"><b>'+esc(a.name)+statusChip+'</b><span class="spent tap" data-spent="'+a.id+'">'+spentTxt+'</span></div>'+
-      '<button class="timerbtn '+(a.runStartTs?"stop":"start")+'" data-id="'+a.id+'">'+(a.runStartTs?"Stop":"Start")+'</button>'+
-      (deletable?'<button class="del" data-del="'+a.id+'">🗑</button>':'')+
+      '<div class="info"><b>'+esc(a.name)+(rec?'<span class="rec-pill">● recording</span>':'')+'</b><span class="spent" data-spent="'+a.id+'">'+spentTxt+'</span></div>'+
       (hasBudget?'<div class="bar" style="width:100%;flex-basis:100%"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+(total>a.budgetMin?"var(--red)":a.color)+'"></i></div>':'');
-    // action chips
-    const chips=document.createElement("div"); chips.className="chips";
-    if(hasBudget){
-      const done=document.createElement("button"); done.className="chip"+(a.status==="done"?"":" primary"); done.textContent=a.status==="done"?"✓ Done — edit":"✓ Mark done"; done.onclick=()=>openDone(a); chips.appendChild(done);
-    }
-    const edit=document.createElement("button"); edit.className="chip"; edit.textContent="✎ Edit time"; edit.onclick=()=>openEdit(a); chips.appendChild(edit);
-    if(opts.canSub){ const sub=document.createElement("button"); sub.className="chip subadd"; sub.textContent="＋ Subtask"; sub.onclick=()=>openTask(a.id); chips.appendChild(sub); }
-    div.appendChild(chips);
-    div.querySelector(".timerbtn").onclick=()=>toggleTimer(a.id);
-    div.querySelector(".spent").onclick=()=>openEdit(a);
-    const del=div.querySelector("[data-del]"); if(del)del.onclick=()=>{
-      if(a.runStartTs)return alert("Stop the timer first.");
-      const subs=day().tasks.filter(x=>x.parentId===a.id);
-      if(subs.length && !confirm('Delete "'+a.name+'" and its '+subs.length+' subtask'+(subs.length>1?'s':'')+'?')) return;
-      day().tasks=day().tasks.filter(x=>x.id!==a.id && x.parentId!==a.id); persist(); renderTrack();
-    };
+    div.onclick=()=>openEdit(a);
     return div;
   }
 
-  /* edit time / done / redeem sheets */
-  let editId=null, doneId=null, redeemId=null;
-  function openEdit(o){ editId=o.id; document.getElementById("editTitle").textContent="Edit time · "+o.name; setHM("eH","eM",spentNow(o));
+  /* ---- track editor (opened by tapping a card) ---- */
+  let editId=null;
+  function openEdit(o){
+    editId=o.id;
+    const isAct=day().acts.some(x=>x.id===o.id);
+    document.getElementById("editTitle").textContent=o.name;
     const sw=document.getElementById("eStartField"); sw.innerHTML=""; editStartField=makeTimeField(winStart()); sw.appendChild(editStartField);
     const ew=document.getElementById("eEndField"); ew.innerHTML=""; editEndField=makeTimeField(winStart()+60); ew.appendChild(editEndField);
-    document.getElementById("editOverlay").classList.add("show"); }
+    setHM("eH","eM",spentNow(o));
+    // delete (only for custom tasks; reserved times are deleted from Plan)
+    const del=document.getElementById("eDelete"); del.style.display = isAct?"none":"block";
+    // add-subtask (only for top-level custom tasks)
+    const subWrap=document.getElementById("eSubWrap"); subWrap.innerHTML="";
+    if(!isAct && !o.parentId){ const b=document.createElement("button"); b.className="chip subadd"; b.textContent="＋ Add subtask"; b.onclick=()=>{ document.getElementById("editOverlay").classList.remove("show"); openTask(o.id); }; subWrap.appendChild(b); }
+    refreshEditor();
+    document.getElementById("editOverlay").classList.add("show");
+  }
+  function refreshEditor(){
+    const o=findEntity(editId); if(!o)return;
+    const isAct=day().acts.some(x=>x.id===o.id);
+    const total=spentNow(o);
+    document.getElementById("eSpent").textContent = o.runStartTs? fmtSec(total) : (durStr(total)+(isAct?" of "+durStr(o.budgetMin):" tracked"));
+    const tb=document.getElementById("eTimer"); tb.textContent=o.runStartTs?"Stop tracking":"Start tracking"; tb.classList.toggle("recording",!!o.runStartTs);
+    // logged sessions for this entity in this cycle
+    const lst=document.getElementById("eSessions"); lst.innerHTML="";
+    const [w0,w1]=cycleWindow();
+    const mine=(state.sessions||[]).filter(se=>se.ref===o.id && se.endTs>w0 && se.startTs<w1).sort((a,b)=>a.startTs-b.startTs);
+    document.getElementById("eSessLbl").style.display = mine.length?"block":"none";
+    mine.forEach(se=>{ const r=document.createElement("div"); r.className="sess-row";
+      const a=Math.max(se.startTs,w0), b=Math.min(se.endTs,w1);
+      r.innerHTML='<span>'+fmt12((new Date(se.startTs).getHours()*60+new Date(se.startTs).getMinutes()))+' – '+fmt12((new Date(se.endTs).getHours()*60+new Date(se.endTs).getMinutes()))+' · '+durStr((b-a)/60000)+'</span><span class="sx" title="Remove">✕</span>';
+      r.querySelector(".sx").onclick=()=>{ state.sessions=state.sessions.filter(x=>x.id!==se.id); persist(); refreshEditor(); renderTrack(); };
+      lst.appendChild(r);
+    });
+  }
+  function editorTimer(){ const o=findEntity(editId); if(!o)return; toggleTimer(o.id); refreshEditor(); }
   function addSession(){
     const o=findEntity(editId); if(!o)return;
     const sMin=editStartField.getValue(), eMin=editEndField.getValue();
-    // place the session within the current cycle by clock time (wraps past midnight if needed)
     const [w0]=cycleWindow(); const dsMin=settings().dayStartMin||0;
     let so=((sMin-dsMin)%1440+1440)%1440; let eo=((eMin-dsMin)%1440+1440)%1440; if(eo<=so)eo+=1440;
     const isAct=day().acts.some(x=>x.id===o.id);
     logSession(o.id, isAct?"act":"task", o.name, o.color, w0+so*60000, w0+eo*60000);
+    persist(); refreshEditor(); renderTrack();
+  }
+  function setTotalManual(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=Math.max(0, hmToMin("eH","eM")-sessionMinFor(o.id)); persist(); refreshEditor(); renderTrack(); }
+  function deleteEditingTask(){
+    const o=findEntity(editId); if(!o)return; if(day().acts.some(x=>x.id===o.id))return;
+    if(o.runStartTs)return alert("Stop tracking first.");
+    const subs=day().tasks.filter(x=>x.parentId===o.id);
+    if(!confirm('Delete "'+o.name+'"'+(subs.length?' and its '+subs.length+' subtask'+(subs.length>1?'s':''):'')+'?')) return;
+    day().tasks=day().tasks.filter(x=>x.id!==o.id && x.parentId!==o.id);
     persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack();
   }
-  function saveEdit(){ const o=findEntity(editId); if(!o)return; if(o.runStartTs)o.runStartTs=null; o.spentMin=Math.max(0, hmToMin("eH","eM")-sessionMinFor(o.id)); persist(); document.getElementById("editOverlay").classList.remove("show"); renderTrack(); }
-
-  function openDone(a){ doneId=a.id; document.getElementById("doneTitle").textContent="Mark done · "+a.name; setHM("dH","dM", a.status==="done"? spentNow(a) : a.budgetMin); document.getElementById("doneOverlay").classList.add("show"); }
-  function saveDone(){ const a=day().acts.find(x=>x.id===doneId); if(!a)return; if(a.runStartTs)a.runStartTs=null; a.spentMin=Math.max(0, hmToMin("dH","dM")-sessionMinFor(a.id)); a.status="done"; persist(); document.getElementById("doneOverlay").classList.remove("show"); renderTrack(); }
 
   function toggleTimer(id){
     const a=day().acts.find(x=>x.id===id)||day().tasks.find(x=>x.id===id); if(!a)return;
@@ -1189,6 +1205,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
   }
   // live timer ticking
   setInterval(()=>{
+    const editorOpen=document.getElementById("editOverlay").classList.contains("show");
+    if(editorOpen){ const o=findEntity(editId); if(o&&o.runStartTs){ const isAct=day().acts.some(x=>x.id===o.id); document.getElementById("eSpent").textContent=fmtSec(spentNow(o)); } }
     if(activeTab!=="track")return;
     const actIds=new Set(day().acts.map(a=>a.id));
     [...day().acts,...day().tasks].forEach(a=>{ if(a.runStartTs){
@@ -1441,12 +1459,11 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("taskOverlay").onclick=e=>{ if(e.target.id==="taskOverlay")document.getElementById("taskOverlay").classList.remove("show"); };
 
   document.getElementById("eCancel").onclick=()=>document.getElementById("editOverlay").classList.remove("show");
-  document.getElementById("eSave").onclick=saveEdit;
+  document.getElementById("eTimer").onclick=editorTimer;
   document.getElementById("eAddSession").onclick=addSession;
+  document.getElementById("eSetTotal").onclick=setTotalManual;
+  document.getElementById("eDelete").onclick=deleteEditingTask;
   document.getElementById("editOverlay").onclick=e=>{ if(e.target.id==="editOverlay")document.getElementById("editOverlay").classList.remove("show"); };
-  document.getElementById("dCancel").onclick=()=>document.getElementById("doneOverlay").classList.remove("show");
-  document.getElementById("dSave").onclick=saveDone;
-  document.getElementById("doneOverlay").onclick=e=>{ if(e.target.id==="doneOverlay")document.getElementById("doneOverlay").classList.remove("show"); };
 
   document.getElementById("addSlotBtn").onclick=openSlot;
   document.getElementById("sCancel").onclick=()=>document.getElementById("slotOverlay").classList.remove("show");
