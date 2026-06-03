@@ -13,7 +13,7 @@
    If the server has a newer build than this cached page, reload to the fresh copy.
    This makes new deploys appear without manually clearing the cache. */
 (function(){
-  var APP_VERSION = 19;
+  var APP_VERSION = 20;
   try{
     fetch("version.json?t="+Date.now(), {cache:"no-store"})
       .then(function(r){ return r.json(); })
@@ -244,6 +244,26 @@
   .tl-line{position:absolute; left:58px; right:14px; border-top:1px dashed var(--line-soft)}
   .tl-line .lab{position:absolute; left:-50px; top:-8px; width:44px; text-align:right; font-size:11px; color:var(--muted)}
   .sess-row.editing{outline:2px solid var(--accent)}
+  .day-picker{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px}
+  .day-pill{width:40px; height:40px; border-radius:50%; border:1px solid var(--line); background:var(--panel); color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center}
+  .day-pill.on{background:var(--accent); color:#06211e; border-color:transparent}
+  .goal-toggle{display:flex; gap:8px; margin-top:8px}
+  .goal-btn{flex:1; padding:10px; border-radius:12px; border:1px solid var(--line); background:var(--panel); color:var(--muted); font-size:13px; font-weight:650; cursor:pointer; text-align:center}
+  .goal-btn.on.min{background:#fef3c7; color:#92400e; border-color:#f59e0b}
+  .goal-btn.on.max{background:#d1fae5; color:#065f46; border-color:var(--green)}
+  /* track widget grid */
+  .track-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; margin-bottom:12px}
+  .tw{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px 10px 10px; cursor:pointer; position:relative; transition:box-shadow .12s}
+  .tw:active{transform:scale(.97)}
+  .tw.running{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent)22}
+  .tw .tw-color{width:100%; height:5px; border-radius:99px; margin-bottom:8px}
+  .tw .tw-name{font-size:14px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px}
+  .tw .tw-time{font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .tw .tw-time.running{color:var(--accent); font-weight:650}
+  .tw .tw-prog{width:100%; height:4px; background:var(--track); border-radius:99px; margin-top:6px; overflow:hidden}
+  .tw .tw-prog i{display:block; height:100%; border-radius:99px}
+  .tw .tw-badge{position:absolute; top:8px; right:8px; width:8px; height:8px; border-radius:50%; background:var(--accent)}
+  .tw .tw-goal{position:absolute; top:8px; right:8px; font-size:10px}
   #eTimer.recording{background:var(--red); color:#fff}
   #eTimer{background:var(--green); color:#fff; width:100%}
   .sess-row{display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg-2); border:1px solid var(--line); border-radius:9px; padding:9px 12px; margin-bottom:7px; font-size:13.5px}
@@ -530,6 +550,15 @@
     <input class="color-input" type="color" id="aColorInput" aria-label="Add custom color" />
     <label class="fl">Repeat</label>
     <div id="aRepeatWrap"></div>
+    <div id="aCustomDays" style="display:none">
+      <label class="fl">Pick specific days</label>
+      <div class="day-picker" id="aDayPicker"></div>
+    </div>
+    <label class="fl">Goal type</label>
+    <div class="goal-toggle">
+      <button type="button" class="goal-btn" id="goalMin" data-goal="min">⬇ Keep it minimal<br><span style="font-size:11px;font-weight:400;opacity:.8">Spend as little as possible</span></button>
+      <button type="button" class="goal-btn" id="goalMax" data-goal="max">⬆ More is better<br><span style="font-size:11px;font-weight:400;opacity:.8">Encouraged to exceed</span></button>
+    </div>
     <div class="sheet-actions">
       <button class="btn cancel" id="aCancel">Cancel</button>
       <button class="btn save" id="aSave">Save</button>
@@ -631,7 +660,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   let activeTab="plan";
   let editingActId=null, pickedColor=BASE_COLORS[0], pickedHours=1, slotSelect=null;
   let slotStartField=null, slotEndField=null, editStartField=null, editEndField=null, dayStartField=null;
-  let pickedRepeat="none", repeatSelect=null;
+  let pickedRepeat="none", repeatSelect=null, pickedCustomDays=[], pickedGoal="none";
 
   /* ---------- storage (local cache + Firestore cloud) ---------- */
   function lkey(){ return KEY+"."+(currentUser?currentUser.uid:"anon"); }
@@ -644,7 +673,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function saveLocal(){ try{ localStorage.setItem(lkey(), JSON.stringify(state)); }catch(e){} }
   function isCloudUser(){ return !!(db && currentUser && currentUser.uid && currentUser.uid!=="preview-user" && !currentUser.isPreview && !currentUser.isGuest); }
   async function loadCloud(uid){
-    try{ const snap=await getDoc(doc(db,"users",uid)); if(snap.exists()){ const d=snap.data(); return {settings:d.settings||{theme:"dark"}, days:d.days||{}}; } }
+    try{ const snap=await getDoc(doc(db,"users",uid)); if(snap.exists()){ const d=snap.data(); return {settings:d.settings||{theme:"dark"}, days:d.days||{}, sessions:d.sessions||[], recurring:d.recurring||[]}; } }
     catch(e){ console.warn("Cloud load failed:", e); }
     return null;
   }
@@ -652,7 +681,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function saveCloud(){
     if(!isCloudUser()) return;
     clearTimeout(cloudTimer);
-    cloudTimer=setTimeout(()=>{ setDoc(doc(db,"users",currentUser.uid), {settings:state.settings, days:state.days, updatedAt:Date.now()}, {merge:true}).catch(e=>console.warn("Cloud save failed:", e)); }, 800);
+    cloudTimer=setTimeout(()=>{ setDoc(doc(db,"users",currentUser.uid), {settings:state.settings, days:state.days, sessions:state.sessions||[], recurring:state.recurring||[], updatedAt:Date.now()}, {merge:true}).catch(e=>console.warn("Cloud save failed:", e)); }, 800);
   }
   function settings(){
     if(!state.settings) state.settings={theme:"dark"};
@@ -676,23 +705,35 @@ catch(e){ console.warn("Firebase init failed:", e); }
     return d;
   }
   /* ---- recurring reserved times ---- */
+  const DAY_NAMES=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   function repeatMatches(type, weekday){ // weekday 0=Sun..6=Sat
     if(type==="daily")return true;
     if(type==="weekdays")return weekday>=1&&weekday<=5;
     if(type==="weekends")return weekday===0||weekday===6;
+    if(type&&type.startsWith("custom:")){ const days=type.slice(7).split(",").map(Number); return days.includes(weekday); }
     return false;
   }
-  function repeatLabel(type){ return {none:"Does not repeat",daily:"Every day",weekdays:"Weekdays (Mon–Fri)",weekends:"Weekends"}[type]||"Does not repeat"; }
+  function repeatLabel(type){
+    if(!type||type==="none") return "Does not repeat";
+    if(type==="daily") return "Every day";
+    if(type==="weekdays") return "Weekdays (Mon–Fri)";
+    if(type==="weekends") return "Weekends";
+    if(type.startsWith("custom:")){ const days=type.slice(7).split(",").map(Number); return days.map(d=>DAY_NAMES[d]).join(", "); }
+    return "Does not repeat";
+  }
   function applyRecurring(d, dateObj){
     if(!Array.isArray(state.recurring)||!state.recurring.length) return;
-    // only auto-fill the active cycle and future ones (don't rewrite history)
-    const todayCyc=cycleDateOf(Date.now()); todayCyc.setHours(0,0,0,0);
-    const cur=new Date(dateObj); cur.setHours(0,0,0,0);
-    if(cur<todayCyc) return;
+    // only auto-fill the CURRENT cycle (today), not future days — they'll get filled when they become today
+    const todayKey=dkey(cycleDateOf(Date.now()));
+    const thisKey=dkey(dateObj);
+    if(thisKey!==todayKey) return;
     const wd=dateObj.getDay();
+    let changed=false;
     state.recurring.forEach(t=>{ if(repeatMatches(t.repeatType,wd) && !d.acts.some(a=>a.tplId===t.id)){
       d.acts.push({id:"a"+Date.now()+Math.random().toString(36).slice(2,5),tplId:t.id,name:t.name,budgetMin:t.budgetMin,color:t.color,slots:[],spentMin:0,runStartTs:null,status:"planned",repeat:t.repeatType});
+      changed=true;
     }});
+    if(changed) persist();
   }
   function upsertTemplate(act){
     if(!Array.isArray(state.recurring)) state.recurring=[];
@@ -854,7 +895,11 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function redeemedMin(){ return 0; }
   function trackedMin(){ return allEntities().reduce((s,o)=>s+spentNow(o),0); }
   function spentNow(a){
-    let s=(a.spentMin||0)+sessionMinFor(a.id);
+    // sessions are the single source of truth; spentMin is only used for manual overrides
+    let s=sessionMinFor(a.id);
+    // if there's a manual override (set via Edit time) and it's HIGHER than what sessions show, use it
+    if((a.spentMin||0)>s) s=a.spentMin;
+    // add live running timer if active
     if(a.runStartTs){ const [w0,w1]=cycleWindow(); const st=Math.max(a.runStartTs,w0), en=Math.min(Date.now(),w1); if(en>st) s+=(en-st)/60000; }
     return s;
   }
@@ -1111,24 +1156,45 @@ catch(e){ console.warn("Firebase init failed:", e); }
   function renderTrack(){
     const el=document.getElementById("trackList"); el.innerHTML="";
     const acts=day().acts, tasks=day().tasks;
-    // summary
     const sum=document.getElementById("trackSum");
     const tracked=trackedMin();
     if(tracked>0){ sum.innerHTML='<span>Tracked <b>'+durStr(tracked)+'</b> today</span>'; sum.style.display="flex"; sum.className="tracksum"; }
     else { sum.style.display="none"; }
+    if(!acts.length && !tasks.length){ el.innerHTML='<div class="empty">No tasks yet.<br>Reserve time on the Plan tab to start tracking.</div>'; return; }
 
-    if(!acts.length && !tasks.length){ el.innerHTML='<div class="empty">No tasks yet.<br>Reserved times appear here automatically.</div>'; return; }
-    if(acts.length){
-      const h=document.createElement("div"); h.className="section-title"; h.style.margin="0 2px 10px"; h.textContent="From reserved times"; el.appendChild(h);
-      acts.forEach(a=>el.appendChild(trackRow(a,true,false)));
-    }
-    const h2=document.createElement("div"); h2.className="section-title"; h2.style.margin="20px 2px 10px"; h2.textContent="Other tasks"; el.appendChild(h2);
-    const topTasks=tasks.filter(t=>!t.parentId);
-    if(!topTasks.length){ const e=document.createElement("div"); e.className="empty"; e.style.padding="10px"; e.textContent="No extra tasks yet."; el.appendChild(e); }
-    topTasks.forEach(t=>{
-      el.appendChild(trackRow(t,false,true,{canSub:true}));
-      tasks.filter(s=>s.parentId===t.id).forEach(s=>el.appendChild(trackRow(s,false,true,{isSub:true})));
+    // sort: running first, then by last session time desc, then original order
+    function sortKey(a){ if(a.runStartTs) return 9e15; const last=lastSessionTs(a.id); return last||0; }
+    const allItems=[...acts.map(a=>({...a,_isAct:true})),...tasks.filter(t=>!t.parentId).map(t=>({...t,_isAct:false}))];
+    allItems.sort((a,b)=>sortKey(b)-sortKey(a));
+
+    const grid=document.createElement("div"); grid.className="track-grid"; el.appendChild(grid);
+    allItems.forEach(a=>{
+      grid.appendChild(makeTrackWidget(a, a._isAct, !a._isAct));
+      // subtasks (parentId can point to either an act or a task)
+      tasks.filter(s=>s.parentId===a.id).sort((x,y)=>sortKey(y)-sortKey(x)).forEach(s=>grid.appendChild(makeTrackWidget(s,false,true,{isSub:true})));
     });
+  }
+  function lastSessionTs(id){ let t=0; (state.sessions||[]).forEach(se=>{ if(se.ref===id&&se.endTs>t) t=se.endTs; }); return t; }
+  function makeTrackWidget(a, hasBudget, deletable, opts){
+    opts=opts||{};
+    const total=spentNow(a);
+    const pct=hasBudget&&a.budgetMin? Math.min(100,total/a.budgetMin*100):0;
+    const over=hasBudget&&total>a.budgetMin;
+    const w=document.createElement("div"); w.className="tw"+(a.runStartTs?" running":"");
+    const goalBadge=hasBudget&&a.goal&&a.goal!=="none"?'<span class="tw-goal">'+(a.goal==="min"?"⬇":"⬆")+'</span>':"";
+    const runBadge=a.runStartTs?'<span class="tw-badge"></span>':"";
+    const progColor=over?"var(--red)":a.color;
+    const timeText=a.runStartTs? fmtSec(total) : durStr(total);
+    const subLabel=opts.isSub?'<span style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">subtask</span>':"";
+    w.innerHTML=
+      '<div class="tw-color" style="background:'+a.color+'"></div>'+
+      subLabel+
+      '<div class="tw-name">'+esc(a.name)+'</div>'+
+      '<div class="tw-time'+(a.runStartTs?' running':'')+'" data-spent="'+a.id+'">'+timeText+(hasBudget?' / '+durStr(a.budgetMin):' tracked')+'</div>'+
+      (hasBudget?'<div class="tw-prog"><i data-bar="'+a.id+'" style="width:'+pct+'%;background:'+progColor+'"></i></div>':'')+
+      goalBadge+runBadge;
+    w.onclick=()=>openEdit(a);
+    return w;
   }
   function trackRow(a,hasBudget,deletable,opts){
     opts=opts||{};
@@ -1169,9 +1235,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     setHM("eH","eM",spentNow(o));
     // delete (only for custom tasks; reserved times are deleted from Plan)
     const del=document.getElementById("eDelete"); del.style.display = isAct?"none":"block";
-    // add-subtask (only for top-level custom tasks)
+    // add-subtask for both reserved times AND top-level custom tasks
     const subWrap=document.getElementById("eSubWrap"); subWrap.innerHTML="";
-    if(!isAct && !o.parentId){ const b=document.createElement("button"); b.className="chip subadd"; b.textContent="＋ Add subtask"; b.onclick=()=>{ document.getElementById("editOverlay").classList.remove("show"); openTask(o.id); }; subWrap.appendChild(b); }
+    if(!o.parentId){ const b=document.createElement("button"); b.className="chip subadd"; b.textContent="＋ Add subtask"; b.onclick=()=>{ document.getElementById("editOverlay").classList.remove("show"); openTask(o.id); }; subWrap.appendChild(b); }
     refreshEditor();
     document.getElementById("editOverlay").classList.add("show");
   }
@@ -1227,8 +1293,9 @@ catch(e){ console.warn("Firebase init failed:", e); }
     if(a.runStartTs){
       const startTs=a.runStartTs, now=Date.now();
       a.runStartTs=null;
-      if((now-startTs)/1000>=60){ // minimum recordable session is 1 minute; attributed to its real cycle(s)
+      if((now-startTs)/1000>=60){ // minimum recordable session is 1 minute
         logSession(id, isAct?"act":"task", a.name, a.color, startTs, now);
+        a.spentMin=0; // sessions are the source of truth; clear any manual override so it doesn't double-count
       }
     } else { a.runStartTs=Date.now(); }
     persist(); renderTrack();
@@ -1379,22 +1446,46 @@ catch(e){ console.warn("Firebase init failed:", e); }
     pickedColor=a?(normColor(a.color)||a.color):colorAt(day().acts.length);
     buildSwatches();
     pickedRepeat=a&&a.repeat?a.repeat:"none";
+    if(pickedRepeat.startsWith("custom:")){ pickedCustomDays=pickedRepeat.slice(7).split(",").map(Number); pickedRepeat="custom"; }
+    else pickedCustomDays=[];
     const rw=document.getElementById("aRepeatWrap"); rw.innerHTML="";
-    repeatSelect=makeSelect(["none","daily","weekdays","weekends"].map(t=>({value:t,label:repeatLabel(t)})), pickedRepeat, v=>{pickedRepeat=v;});
+    repeatSelect=makeSelect(["none","daily","weekdays","weekends","custom"].map(t=>({value:t,label:{none:"Does not repeat",daily:"Every day",weekdays:"Weekdays (Mon–Fri)",weekends:"Weekends",custom:"Custom days…"}[t]})), pickedRepeat==="custom"?"custom":pickedRepeat, v=>{
+      pickedRepeat=v; document.getElementById("aCustomDays").style.display=v==="custom"?"block":"none";
+    });
     rw.appendChild(repeatSelect);
+    document.getElementById("aCustomDays").style.display=pickedRepeat==="custom"?"block":"none";
+    buildDayPicker();
+    // goal type
+    pickedGoal=a&&a.goal?a.goal:"none";
+    updateGoalUI();
     document.getElementById("aDelete").style.display = a ? "block" : "none";
     document.getElementById("actOverlay").classList.add("show");
+  }
+  function buildDayPicker(){
+    const dp=document.getElementById("aDayPicker"); dp.innerHTML="";
+    ["Su","Mo","Tu","We","Th","Fr","Sa"].forEach((n,i)=>{
+      const b=document.createElement("button"); b.type="button"; b.className="day-pill"+(pickedCustomDays.includes(i)?" on":"");
+      b.textContent=n; b.onclick=()=>{ if(pickedCustomDays.includes(i)) pickedCustomDays=pickedCustomDays.filter(d=>d!==i); else pickedCustomDays=[...pickedCustomDays,i].sort((a,b)=>a-b); buildDayPicker(); };
+      dp.appendChild(b);
+    });
+  }
+  function updateGoalUI(){
+    document.getElementById("goalMin").classList.toggle("on",pickedGoal==="min"); document.getElementById("goalMin").classList.toggle("min",pickedGoal==="min");
+    document.getElementById("goalMax").classList.toggle("on",pickedGoal==="max"); document.getElementById("goalMax").classList.toggle("max",pickedGoal==="max");
   }
   function saveAct(){
     syncTypedHours();
     const name=document.getElementById("aName").value.trim()||"Reserved";
     const budgetMin=Math.round(pickedHours*60);
     const color=normColor(pickedColor)||pickedColor;
-    const repeat=repeatSelect?repeatSelect.getValue():"none";
+    const rawRepeat=repeatSelect?repeatSelect.getValue():"none";
+    const repeat = rawRepeat==="custom"
+      ? (pickedCustomDays.length? "custom:"+pickedCustomDays.join(",") : "none")
+      : rawRepeat;
     const acts=day().acts;
     let act;
-    if(editingActId){ act=acts.find(x=>x.id===editingActId); act.name=name; act.budgetMin=budgetMin; act.color=color; act.repeat=repeat; }
-    else { act={id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color,slots:[],spentMin:0,runStartTs:null,status:"planned",repeat}; acts.push(act); }
+    if(editingActId){ act=acts.find(x=>x.id===editingActId); act.name=name; act.budgetMin=budgetMin; act.color=color; act.repeat=repeat; act.goal=pickedGoal; }
+    else { act={id:"a"+Date.now()+Math.random().toString(36).slice(2,5),name,budgetMin,color,slots:[],spentMin:0,runStartTs:null,status:"planned",repeat,goal:pickedGoal}; acts.push(act); }
     if(repeat!=="none") upsertTemplate(act);
     else if(act.tplId){ removeTemplate(act.tplId); act.tplId=null; }
     persist(); closeAct(); render();
@@ -1407,7 +1498,7 @@ catch(e){ console.warn("Firebase init failed:", e); }
   let newTaskParent=null;
   function openTask(parentId){
     newTaskParent=parentId||null;
-    const parent=parentId?day().tasks.find(t=>t.id===parentId):null;
+    const parent=parentId?findEntity(parentId):null;
     document.getElementById("taskSheetTitle").textContent=parent?("Add subtask to "+parent.name):"Add task";
     document.getElementById("tName").value="";
     taskColor=parent?parent.color:colorAt(day().acts.length+day().tasks.length);
@@ -1455,6 +1546,8 @@ catch(e){ console.warn("Firebase init failed:", e); }
   document.getElementById("nextDay").onclick=()=>{ current.setDate(current.getDate()+1); render(); };
   document.getElementById("datePicker").onchange=e=>{ if(e.target.value){ const [y,m,d]=e.target.value.split("-").map(Number); current=new Date(y,m-1,d); render(); } };
   document.getElementById("addActBtn").onclick=()=>openAct(null);
+  document.getElementById("goalMin").onclick=()=>{ pickedGoal=pickedGoal==="min"?"none":"min"; updateGoalUI(); };
+  document.getElementById("goalMax").onclick=()=>{ pickedGoal=pickedGoal==="max"?"none":"max"; updateGoalUI(); };
   document.getElementById("sortName").onclick=()=>applySort("name");
   document.getElementById("sortHours").onclick=()=>applySort("hours");
   document.getElementById("viewToggle").onclick=toggleView;
